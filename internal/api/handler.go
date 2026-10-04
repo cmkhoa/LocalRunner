@@ -47,6 +47,8 @@ func NewHandler(manager *runner.Manager, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/runners/status", h.runnerStatus)
 	mux.HandleFunc("POST /v1/models/register", h.registerModel)
+	mux.HandleFunc("GET /v1/models/profiles", h.listProfiles)
+	mux.HandleFunc("POST /v1/models/activate", h.activateProfile)
 	mux.HandleFunc("POST /v1/runners/start", h.startRunner)
 	mux.HandleFunc("POST /v1/runners/stop", h.stopRunner)
 	mux.HandleFunc("POST /v1/chat/completions", h.chatCompletion)
@@ -72,6 +74,30 @@ func (h *Handler) registerModel(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := h.runner.Register(request.Path)
 	if err != nil {
+		h.writeRunnerError(w, err)
+		return
+	}
+	h.writeJSON(w, http.StatusOK, status)
+}
+
+func (h *Handler) listProfiles(w http.ResponseWriter, r *http.Request) {
+	h.writeJSON(w, http.StatusOK, map[string]any{"profiles": h.runner.Profiles()})
+}
+
+func (h *Handler) activateProfile(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(w, r, &request); err != nil {
+		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	status, err := h.runner.ActivateProfile(request.Name)
+	if err != nil {
+		if strings.Contains(err.Error(), "was not found") {
+			h.writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
+			return
+		}
 		h.writeRunnerError(w, err)
 		return
 	}

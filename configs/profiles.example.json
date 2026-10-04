@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "qwen3-4b": {
+      "model_path": "/absolute/path/to/Qwen3-4B-Q4_K_M.gguf",
+      "context_size": 2048,
+      "gpu_layers": 99
+    }
+  }
+}

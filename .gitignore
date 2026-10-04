@@ -5,3 +5,6 @@
 # Local desktop and R-session artifacts.
 .DS_Store
 .Rhistory
+
+# Machine-specific model profiles.
+configs/*.local.json

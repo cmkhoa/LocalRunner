@@ -2,10 +2,12 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"localrunner/internal/runner"
@@ -17,6 +19,7 @@ const defaultListenAddress = "127.0.0.1:8080"
 type Config struct {
 	ListenAddress string
 	Runner        runner.Config
+	Profiles      []runner.Profile
 }
 
 // FromEnv loads safe defaults for the local HTTP API.
@@ -53,7 +56,36 @@ func FromEnv() (Config, error) {
 		return Config{}, err
 	}
 
-	return Config{ListenAddress: listenAddress, Runner: runnerConfig}, nil
+	profiles, err := profilesFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{ListenAddress: listenAddress, Runner: runnerConfig, Profiles: profiles}, nil
+}
+
+func profilesFromEnv() ([]runner.Profile, error) {
+	path := os.Getenv("LOCALRUNNER_PROFILES_PATH")
+	if path == "" {
+		return nil, nil
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read LOCALRUNNER_PROFILES_PATH: %w", err)
+	}
+	var document struct {
+		Profiles map[string]runner.Profile `json:"profiles"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(contents)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("parse LOCALRUNNER_PROFILES_PATH: %w", err)
+	}
+	profiles := make([]runner.Profile, 0, len(document.Profiles))
+	for name, profile := range document.Profiles {
+		profile.Name = name
+		profiles = append(profiles, profile)
+	}
+	return profiles, nil
 }
 
 func envOrDefault(key, fallback string) string {

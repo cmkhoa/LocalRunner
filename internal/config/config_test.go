@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestFromEnvDefaultsToLoopback(t *testing.T) {
 	t.Setenv("LOCALRUNNER_LISTEN_ADDRESS", "")
@@ -19,5 +23,25 @@ func TestFromEnvRejectsNonLoopbackHost(t *testing.T) {
 
 	if _, err := FromEnv(); err == nil {
 		t.Fatal("FromEnv() error = nil, want error")
+	}
+}
+
+func TestFromEnvLoadsProfiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	contents := []byte(`{"profiles":{"small":{"model_path":"/tmp/model.gguf","context_size":1024,"gpu_layers":4}}}`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOCALRUNNER_PROFILES_PATH", path)
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	if len(cfg.Profiles) != 1 {
+		t.Fatalf("Profiles length = %d, want 1", len(cfg.Profiles))
+	}
+	if got, want := cfg.Profiles[0].Name, "small"; got != want {
+		t.Errorf("profile name = %q, want %q", got, want)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,26 +44,38 @@ type Config struct {
 	ShutdownTimeout  time.Duration
 }
 
+// Profile provides a reusable, explicitly named local-model configuration.
+// It intentionally exposes only safe runtime settings, never raw arguments.
+type Profile struct {
+	Name        string `json:"name"`
+	ModelPath   string `json:"model_path"`
+	ContextSize int    `json:"context_size,omitempty"`
+	GPULayers   int    `json:"gpu_layers,omitempty"`
+}
+
 func DefaultConfig() Config {
 	return Config{Executable: "llama-server", Address: "127.0.0.1:8081", ContextSize: 2048, GPULayers: 99, ReadinessTimeout: 60 * time.Second, ShutdownTimeout: 10 * time.Second}
 }
 
 type Status struct {
-	State        State  `json:"state"`
-	PID          *int   `json:"pid,omitempty"`
-	ActiveModel  string `json:"active_model,omitempty"`
-	Healthy      bool   `json:"healthy"`
-	RestartCount uint64 `json:"restart_count"`
+	State         State  `json:"state"`
+	PID           *int   `json:"pid,omitempty"`
+	ActiveModel   string `json:"active_model,omitempty"`
+	ActiveProfile string `json:"active_profile,omitempty"`
+	Healthy       bool   `json:"healthy"`
+	RestartCount  uint64 `json:"restart_count"`
 }
 
 // Manager owns one registered model and one child process at a time.
 type Manager struct {
 	mu          sync.RWMutex
 	config      Config
+	baseConfig  Config
 	logger      *slog.Logger
 	client      *http.Client
 	status      Status
 	modelPath   string
+	profiles    map[string]Profile
 	process     *exec.Cmd
 	processDone chan struct{}
 	hasStarted  bool
@@ -72,7 +85,7 @@ func NewManager(config Config, logger *slog.Logger) *Manager {
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return &Manager{config: config, logger: logger, client: &http.Client{Timeout: 2 * time.Second}, status: Status{State: Stopped}}
+	return &Manager{config: config, baseConfig: config, logger: logger, client: &http.Client{Timeout: 2 * time.Second}, profiles: make(map[string]Profile), status: Status{State: Stopped}}
 }
 
 // Register validates and stores the one active GGUF model path.
@@ -87,7 +100,60 @@ func (m *Manager) Register(path string) (Status, error) {
 		return Status{}, fmt.Errorf("%w: stop the runner before registering a model", ErrInvalidState)
 	}
 	m.modelPath = absPath
+	m.config = m.baseConfig
 	m.status.ActiveModel = filepath.Base(absPath)
+	m.status.ActiveProfile = ""
+	return m.status, nil
+}
+
+// AddProfile validates and stores a named profile for later activation.
+func (m *Manager) AddProfile(profile Profile) error {
+	profile, err := m.validateProfile(profile)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.profiles[profile.Name]; exists {
+		return fmt.Errorf("profile %q is already defined", profile.Name)
+	}
+	m.profiles[profile.Name] = profile
+	return nil
+}
+
+// Profiles returns configured names and safe runtime settings, never prompts.
+func (m *Manager) Profiles() []Profile {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	profiles := make([]Profile, 0, len(m.profiles))
+	for _, profile := range m.profiles {
+		profiles = append(profiles, profile)
+	}
+	slices.SortFunc(profiles, func(left, right Profile) int { return strings.Compare(left.Name, right.Name) })
+	return profiles
+}
+
+// ActivateProfile selects a configured model and settings while stopped.
+func (m *Manager) ActivateProfile(name string) (Status, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.status.State != Stopped && m.status.State != Unhealthy {
+		return Status{}, fmt.Errorf("%w: stop the runner before activating a profile", ErrInvalidState)
+	}
+	profile, exists := m.profiles[name]
+	if !exists {
+		return Status{}, fmt.Errorf("profile %q was not found", name)
+	}
+	m.modelPath = profile.ModelPath
+	m.config = m.baseConfig
+	if profile.ContextSize > 0 {
+		m.config.ContextSize = profile.ContextSize
+	}
+	if profile.GPULayers > 0 {
+		m.config.GPULayers = profile.GPULayers
+	}
+	m.status.ActiveModel = filepath.Base(profile.ModelPath)
+	m.status.ActiveProfile = profile.Name
 	return m.status, nil
 }
 
@@ -270,6 +336,25 @@ func validateModelPath(path string) (string, error) {
 		return "", errors.New("model file must not be empty")
 	}
 	return absPath, nil
+}
+
+func (m *Manager) validateProfile(profile Profile) (Profile, error) {
+	profile.Name = strings.TrimSpace(profile.Name)
+	if profile.Name == "" {
+		return Profile{}, errors.New("profile name is required")
+	}
+	if strings.ContainsAny(profile.Name, "/\\") {
+		return Profile{}, errors.New("profile name must not contain path separators")
+	}
+	modelPath, err := validateModelPath(profile.ModelPath)
+	if err != nil {
+		return Profile{}, err
+	}
+	profile.ModelPath = modelPath
+	if profile.ContextSize < 0 || profile.GPULayers < 0 {
+		return Profile{}, errors.New("profile runtime settings must not be negative")
+	}
+	return profile, nil
 }
 
 func validateRunnerConfig(config Config) error {

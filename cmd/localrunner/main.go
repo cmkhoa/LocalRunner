@@ -24,6 +24,12 @@ func main() {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	manager := runner.NewManager(cfg.Runner, logger)
+	for _, profile := range cfg.Profiles {
+		if err := manager.AddProfile(profile); err != nil {
+			logger.Error("invalid model profile", "profile", profile.Name, "error", err)
+			os.Exit(1)
+		}
+	}
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
 		Handler:           api.NewHandler(manager, logger),

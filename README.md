@@ -66,6 +66,26 @@ Configuration is intentionally process-level, never supplied in HTTP requests:
 | `LOCALRUNNER_READINESS_TIMEOUT` | `60s` | Maximum start/readiness interval |
 | `LOCALRUNNER_SHUTDOWN_TIMEOUT` | `10s` | Graceful-stop limit before forced termination |
 
+### Named model profiles
+
+For repeatable settings, set `LOCALRUNNER_PROFILES_PATH` to a JSON file shaped
+like [configs/profiles.example.json](configs/profiles.example.json). Profiles
+have a name, validated local GGUF path, context size, and requested GPU layers;
+they do not accept arbitrary command-line fragments.
+
+```sh
+LOCALRUNNER_PROFILES_PATH=/absolute/path/to/profiles.json go run ./cmd/localrunner
+
+curl http://127.0.0.1:8080/v1/models/profiles
+curl -X POST http://127.0.0.1:8080/v1/models/activate \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"qwen3-4b"}'
+curl -X POST http://127.0.0.1:8080/v1/runners/start
+```
+
+Profiles may only be activated while the runner is stopped or unhealthy. Direct
+`/v1/models/register` remains available for one-off model paths.
+
 ## Chat completion
 
 Once the runner is `ready`, submit a non-streaming request through LocalRunner:

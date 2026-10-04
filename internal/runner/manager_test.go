@@ -42,3 +42,28 @@ func TestStartRequiresRegisteredModel(t *testing.T) {
 		t.Fatalf("Start() error = %v, want %v", err, ErrNoModel)
 	}
 }
+
+func TestActivateProfileSelectsValidatedModelAndSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile-model.gguf")
+	if err := os.WriteFile(path, []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(DefaultConfig(), slog.Default())
+	if err := manager.AddProfile(Profile{Name: "small", ModelPath: path, ContextSize: 1024, GPULayers: 4}); err != nil {
+		t.Fatalf("AddProfile() error = %v", err)
+	}
+	status, err := manager.ActivateProfile("small")
+	if err != nil {
+		t.Fatalf("ActivateProfile() error = %v", err)
+	}
+	if got, want := status.ActiveModel, "profile-model.gguf"; got != want {
+		t.Errorf("ActiveModel = %q, want %q", got, want)
+	}
+	if got, want := status.ActiveProfile, "small"; got != want {
+		t.Errorf("ActiveProfile = %q, want %q", got, want)
+	}
+	profiles := manager.Profiles()
+	if len(profiles) != 1 || profiles[0].Name != "small" {
+		t.Errorf("Profiles() = %#v, want small", profiles)
+	}
+}

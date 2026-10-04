@@ -31,7 +31,7 @@ func TestRunnerStatusStartsStopped(t *testing.T) {
 	}
 }
 
-func TestChatRejectsStreaming(t *testing.T) {
+func TestStreamingChatRequiresReadyRunner(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(testWriter{t}, nil))
 	handler := api.NewHandler(runner.NewManager(runner.DefaultConfig(), logger), logger)
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"messages":[{"role":"user","content":"hello"}],"stream":true}`))
@@ -40,8 +40,8 @@ func TestChatRejectsStreaming(t *testing.T) {
 
 	handler.ServeHTTP(response, request)
 
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status code = %d, want %d", response.Code, http.StatusBadRequest)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
 	var payload struct {
 		Error struct {
@@ -53,10 +53,10 @@ func TestChatRejectsStreaming(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("response is not JSON: %v", err)
 	}
-	if got, want := payload.Error.Code, "invalid_request"; got != want {
+	if got, want := payload.Error.Code, "runner_unavailable"; got != want {
 		t.Errorf("error code = %q, want %q", got, want)
 	}
-	if got, want := payload.Error.Message, "streaming is not supported"; got != want {
+	if got, want := payload.Error.Message, "runner is unavailable: stopped"; got != want {
 		t.Errorf("error message = %q, want %q", got, want)
 	}
 	if payload.Error.RequestID == "" || payload.Error.RequestID != response.Header().Get("X-Request-ID") {

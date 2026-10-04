@@ -2,6 +2,7 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -127,6 +128,10 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	if request.Stream {
+		h.streamChatCompletion(w, r, request, started, requestID)
+		return
+	}
 	if request.MaxTokens == 0 {
 		request.MaxTokens = defaultMaxTokens
 	}
@@ -147,6 +152,33 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds(), "generated_tokens", generatedTokens, "tokens_per_second", tokensPerSecond)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(response)
+}
+
+// streamChatCompletion proxies llama.cpp's OpenAI-style server-sent events.
+// The queue worker owns the ResponseWriter while this handler waits, so the
+// active runner remains protected for the entire stream duration.
+func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, request chatRequest, started time.Time, requestID string) {
+	if request.MaxTokens == 0 {
+		request.MaxTokens = defaultMaxTokens
+	}
+	if _, err := h.runner.ChatEndpoint(); err != nil {
+		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), Latency: time.Since(started)})
+		h.writeChatError(w, requestID, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	defer cancel()
+	_, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (json.RawMessage, error) {
+		return nil, h.proxyStream(ctx, request, w)
+	})
+	if err != nil {
+		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), QueueWait: queueStats.Wait, Latency: time.Since(started)})
+		h.writeChatError(w, requestID, err)
+		return
+	}
+	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started)})
+	h.logger.Info("streamed chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds())
 }
 
 func chatErrorCategory(err error) string {
@@ -179,9 +211,6 @@ func responseMetrics(response json.RawMessage) (int, time.Duration, float64) {
 }
 
 func (request chatRequest) validate() error {
-	if request.Stream {
-		return errors.New("streaming is not supported")
-	}
 	if len(request.Messages) == 0 {
 		return errors.New("messages is required")
 	}
@@ -243,6 +272,59 @@ func (h *Handler) proxyChat(ctx context.Context, chat chatRequest) (json.RawMess
 		return nil, errors.New("upstream returned invalid JSON")
 	}
 	return json.RawMessage(responseBody), nil
+}
+
+func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http.ResponseWriter) error {
+	endpoint, err := h.runner.ChatEndpoint()
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(chat)
+	if err != nil {
+		return fmt.Errorf("encode upstream request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build upstream request: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := h.client.Do(request)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return fmt.Errorf("upstream request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("upstream failure: HTTP %d", response.StatusCode)
+	}
+
+	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("Connection", "keep-alive")
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		return errors.New("response writer does not support streaming")
+	}
+	writer.WriteHeader(http.StatusOK)
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if _, err := writer.Write(append(append([]byte(nil), line...), '\n')); err != nil {
+			return fmt.Errorf("write stream: %w", err)
+		}
+		flusher.Flush()
+	}
+	if err := scanner.Err(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
+		return fmt.Errorf("read upstream stream: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) withJSON(next http.Handler) http.Handler {

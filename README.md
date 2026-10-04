@@ -84,7 +84,20 @@ Requests are serialized through one worker to protect the active model. The
 queue holds at most 16 waiting requests; an overflow returns HTTP 429. Requests
 must contain 1–64 `system`, `user`, or `assistant` messages, at most 32 KiB of
 message text, and no more than 512 generated tokens. Streaming is intentionally
-not implemented in this release.
+supported through standard server-sent events (SSE). Set `"stream": true` in
+the same request shape to receive incremental `data:` chunks and a final
+`data: [DONE]` event. Streaming requests retain the queue worker until the
+stream ends, so they cannot overload the active model.
+
+```sh
+curl --no-buffer http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role":"user","content":"Count from one to three."}],
+    "stream": true,
+    "chat_template_kwargs": {"enable_thinking": false}
+  }'
+```
 
 ## Metrics
 

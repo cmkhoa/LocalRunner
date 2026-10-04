@@ -138,8 +138,8 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 		h.writeChatError(w, err)
 		return
 	}
-	generatedTokens, generationDuration := responseMetrics(response)
-	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started), GeneratedTokens: generatedTokens, GenerationDuration: generationDuration})
+	generatedTokens, generationDuration, tokensPerSecond := responseMetrics(response)
+	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started), GeneratedTokens: generatedTokens, GenerationDuration: generationDuration, TokensPerSecond: tokensPerSecond})
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(response)
 }
@@ -157,19 +157,20 @@ func chatErrorCategory(err error) string {
 	}
 }
 
-func responseMetrics(response json.RawMessage) (int, time.Duration) {
+func responseMetrics(response json.RawMessage) (int, time.Duration, float64) {
 	var payload struct {
 		Usage struct {
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"usage"`
 		Timings struct {
-			PredictedMS float64 `json:"predicted_ms"`
+			PredictedMS        float64 `json:"predicted_ms"`
+			PredictedPerSecond float64 `json:"predicted_per_second"`
 		} `json:"timings"`
 	}
 	if err := json.Unmarshal(response, &payload); err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
-	return payload.Usage.CompletionTokens, time.Duration(payload.Timings.PredictedMS * float64(time.Millisecond))
+	return payload.Usage.CompletionTokens, time.Duration(payload.Timings.PredictedMS * float64(time.Millisecond)), payload.Timings.PredictedPerSecond
 }
 
 func (request chatRequest) validate() error {

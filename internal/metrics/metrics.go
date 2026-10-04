@@ -15,6 +15,7 @@ type Request struct {
 	Latency            time.Duration
 	GeneratedTokens    int
 	GenerationDuration time.Duration
+	TokensPerSecond    float64
 }
 
 // Snapshot is the stable JSON representation of process-lifetime metrics.
@@ -51,6 +52,8 @@ type Collector struct {
 	latency            time.Duration
 	generatedTokens    uint64
 	generationDuration time.Duration
+	throughputTotal    float64
+	throughputSamples  uint64
 }
 
 func New() *Collector { return &Collector{byError: make(map[string]uint64)} }
@@ -67,6 +70,10 @@ func (c *Collector) Record(request Request) {
 			c.generatedTokens += uint64(request.GeneratedTokens)
 		}
 		c.generationDuration += request.GenerationDuration
+		if request.TokensPerSecond > 0 {
+			c.throughputTotal += request.TokensPerSecond
+			c.throughputSamples++
+		}
 		return
 	}
 	c.failed++
@@ -92,8 +99,8 @@ func (c *Collector) Snapshot() Snapshot {
 	}
 	snapshot.Generation.Tokens = c.generatedTokens
 	snapshot.Generation.DurationMS = float64(c.generationDuration) / float64(time.Millisecond)
-	if c.generationDuration > 0 {
-		snapshot.Generation.TokensPerSecond = float64(c.generatedTokens) / c.generationDuration.Seconds()
+	if c.throughputSamples > 0 {
+		snapshot.Generation.TokensPerSecond = c.throughputTotal / float64(c.throughputSamples)
 	}
 	return snapshot
 }

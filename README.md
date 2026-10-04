@@ -80,6 +80,14 @@ must contain 1–64 `system`, `user`, or `assistant` messages, at most 32 KiB of
 message text, and no more than 512 generated tokens. Streaming is intentionally
 not implemented in this release.
 
+## Metrics
+
+`GET /metrics` returns process-lifetime JSON aggregates without retaining
+prompts or responses. It includes successful/failed request counts and error
+categories, total and average queue waiting time, total and average end-to-end
+latency, generated-token totals, and the average generation rate reported by
+`llama.cpp` for successful requests. Metrics reset whenever LocalRunner restarts.
+
 ## Local inference prerequisite
 
 Install/build a compatible `llama.cpp` `llama-server` executable and have a

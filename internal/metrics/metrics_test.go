@@ -7,7 +7,7 @@ import (
 
 func TestCollectorAggregatesSuccessAndFailure(t *testing.T) {
 	collector := New()
-	collector.Record(Request{Succeeded: true, QueueWait: 10 * time.Millisecond, Latency: 40 * time.Millisecond, GeneratedTokens: 8, GenerationDuration: 200 * time.Millisecond})
+	collector.Record(Request{Succeeded: true, QueueWait: 10 * time.Millisecond, Latency: 40 * time.Millisecond, GeneratedTokens: 8, GenerationDuration: 200 * time.Millisecond, TokensPerSecond: 40})
 	collector.Record(Request{ErrorCategory: "runner_unavailable", QueueWait: 2 * time.Millisecond, Latency: 3 * time.Millisecond})
 
 	snapshot := collector.Snapshot()

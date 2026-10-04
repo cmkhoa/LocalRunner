@@ -1,3 +1,7 @@
 # Local model weights are large, machine-specific artifacts.
 *.gguf
 *.gguf.download
+
+# Local desktop and R-session artifacts.
+.DS_Store
+.Rhistory

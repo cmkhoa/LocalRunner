@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,8 @@ type Handler struct {
 	client  *http.Client
 	metrics *metrics.Collector
 }
+
+type requestIDKey struct{}
 
 // NewHandler constructs the v1 API handler.
 func NewHandler(manager *runner.Manager, logger *slog.Logger) http.Handler {
@@ -112,6 +115,7 @@ type chatMessage struct {
 
 func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
+	requestID := requestIDFromRequest(r)
 	var request chatRequest
 	if err := decodeJSON(w, r, &request); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: "invalid_request", Latency: time.Since(started)})
@@ -135,11 +139,12 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), QueueWait: queueStats.Wait, Latency: time.Since(started)})
-		h.writeChatError(w, err)
+		h.writeChatError(w, requestID, err)
 		return
 	}
 	generatedTokens, generationDuration, tokensPerSecond := responseMetrics(response)
 	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started), GeneratedTokens: generatedTokens, GenerationDuration: generationDuration, TokensPerSecond: tokensPerSecond})
+	h.logger.Info("chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds(), "generated_tokens", generatedTokens, "tokens_per_second", tokensPerSecond)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(response)
 }
@@ -242,8 +247,10 @@ func (h *Handler) proxyChat(ctx context.Context, chat chatRequest) (json.RawMess
 
 func (h *Handler) withJSON(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID := newRequestID()
+		w.Header().Set("X-Request-ID", requestID)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID)))
 	})
 }
 
@@ -272,7 +279,7 @@ func (h *Handler) writeRunnerError(w http.ResponseWriter, err error) {
 	h.writeError(w, status, code, err.Error())
 }
 
-func (h *Handler) writeChatError(w http.ResponseWriter, err error) {
+func (h *Handler) writeChatError(w http.ResponseWriter, requestID string, err error) {
 	switch {
 	case errors.Is(err, queue.ErrFull):
 		h.writeError(w, http.StatusTooManyRequests, "queue_full", "runner request queue is full")
@@ -281,13 +288,28 @@ func (h *Handler) writeChatError(w http.ResponseWriter, err error) {
 	case errors.Is(err, context.DeadlineExceeded):
 		h.writeError(w, http.StatusGatewayTimeout, "timeout", "request timed out")
 	default:
-		h.logger.Warn("chat completion failed", "error", err)
+		h.logger.Warn("chat completion failed", "request_id", requestID, "error", err)
 		h.writeError(w, http.StatusBadGateway, "upstream_failure", "runner request failed")
 	}
 }
 
 func (h *Handler) writeError(w http.ResponseWriter, status int, code, message string) {
-	h.writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	h.writeJSON(w, status, map[string]any{"error": map[string]string{"code": code, "message": message, "request_id": w.Header().Get("X-Request-ID")}})
+}
+
+func newRequestID() string {
+	bytes := make([]byte, 12)
+	if _, err := rand.Read(bytes); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", bytes)
+}
+
+func requestIDFromRequest(request *http.Request) string {
+	if requestID, ok := request.Context().Value(requestIDKey{}).(string); ok {
+		return requestID
+	}
+	return ""
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {

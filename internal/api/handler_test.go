@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -42,8 +43,24 @@ func TestChatRejectsStreaming(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status code = %d, want %d", response.Code, http.StatusBadRequest)
 	}
-	if got, want := response.Body.String(), "{\"error\":{\"code\":\"invalid_request\",\"message\":\"streaming is not supported\"}}\n"; got != want {
-		t.Errorf("response body = %q, want %q", got, want)
+	var payload struct {
+		Error struct {
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"request_id"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if got, want := payload.Error.Code, "invalid_request"; got != want {
+		t.Errorf("error code = %q, want %q", got, want)
+	}
+	if got, want := payload.Error.Message, "streaming is not supported"; got != want {
+		t.Errorf("error message = %q, want %q", got, want)
+	}
+	if payload.Error.RequestID == "" || payload.Error.RequestID != response.Header().Get("X-Request-ID") {
+		t.Errorf("request ID = %q, header = %q", payload.Error.RequestID, response.Header().Get("X-Request-ID"))
 	}
 }
 

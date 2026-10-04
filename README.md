@@ -88,6 +88,10 @@ categories, total and average queue waiting time, total and average end-to-end
 latency, generated-token totals, and the average generation rate reported by
 `llama.cpp` for successful requests. Metrics reset whenever LocalRunner restarts.
 
+Every response also includes an `X-Request-ID` header. JSON error bodies repeat
+that value as `error.request_id`; the same ID is written to completion logs with
+operational fields only (never prompt or generated text).
+
 ## Local inference prerequisite
 
 Install/build a compatible `llama.cpp` `llama-server` executable and have a

@@ -45,3 +45,23 @@ func TestFromEnvLoadsProfiles(t *testing.T) {
 		t.Errorf("profile name = %q, want %q", got, want)
 	}
 }
+
+func TestFromEnvLoadsAutoRestartSettings(t *testing.T) {
+	t.Setenv("LOCALRUNNER_AUTO_RESTART", "true")
+	t.Setenv("LOCALRUNNER_AUTO_RESTART_DELAY", "3s")
+	t.Setenv("LOCALRUNNER_MAX_AUTO_RESTARTS", "2")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	if !cfg.Runner.AutoRestart {
+		t.Error("AutoRestart = false, want true")
+	}
+	if got, want := cfg.Runner.AutoRestartDelay.String(), "3s"; got != want {
+		t.Errorf("AutoRestartDelay = %q, want %q", got, want)
+	}
+	if got, want := cfg.Runner.MaxAutoRestarts, 2; got != want {
+		t.Errorf("MaxAutoRestarts = %d, want %d", got, want)
+	}
+}

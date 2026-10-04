@@ -65,6 +65,15 @@ Configuration is intentionally process-level, never supplied in HTTP requests:
 | `LOCALRUNNER_GPU_LAYERS` | `99` | Requested GPU-offloaded layers |
 | `LOCALRUNNER_READINESS_TIMEOUT` | `60s` | Maximum start/readiness interval |
 | `LOCALRUNNER_SHUTDOWN_TIMEOUT` | `10s` | Graceful-stop limit before forced termination |
+| `LOCALRUNNER_AUTO_RESTART` | `false` | Opt in to automatic recovery after an unexpected child exit |
+| `LOCALRUNNER_AUTO_RESTART_DELAY` | `2s` | Delay before an automatic restart attempt |
+| `LOCALRUNNER_MAX_AUTO_RESTARTS` | `3` | Maximum automatic attempts per LocalRunner process |
+
+Automatic restart is intentionally disabled by default. When enabled, an
+unexpected runner exit first becomes observable as `unhealthy`; LocalRunner then
+waits for the configured delay and retries. It stops scheduling attempts after
+the configured maximum, avoiding an unbounded crash loop. Explicit stop requests
+never schedule a restart.
 
 ### Named model profiles
 

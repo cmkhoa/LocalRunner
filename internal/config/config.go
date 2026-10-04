@@ -55,6 +55,15 @@ func FromEnv() (Config, error) {
 	if runnerConfig.ShutdownTimeout, err = durationEnv("LOCALRUNNER_SHUTDOWN_TIMEOUT", runnerConfig.ShutdownTimeout); err != nil {
 		return Config{}, err
 	}
+	if runnerConfig.AutoRestart, err = boolEnv("LOCALRUNNER_AUTO_RESTART", runnerConfig.AutoRestart); err != nil {
+		return Config{}, err
+	}
+	if runnerConfig.AutoRestartDelay, err = durationEnv("LOCALRUNNER_AUTO_RESTART_DELAY", runnerConfig.AutoRestartDelay); err != nil {
+		return Config{}, err
+	}
+	if runnerConfig.MaxAutoRestarts, err = nonNegativeIntEnv("LOCALRUNNER_MAX_AUTO_RESTARTS", runnerConfig.MaxAutoRestarts); err != nil {
+		return Config{}, err
+	}
 
 	profiles, err := profilesFromEnv()
 	if err != nil {
@@ -137,6 +146,18 @@ func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
 	parsed, err := time.ParseDuration(value)
 	if err != nil || parsed <= 0 {
 		return 0, fmt.Errorf("%s must be a positive Go duration", key)
+	}
+	return parsed, nil
+}
+
+func boolEnv(key string, fallback bool) (bool, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false", key)
 	}
 	return parsed, nil
 }

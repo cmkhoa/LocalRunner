@@ -42,6 +42,9 @@ type Config struct {
 	GPULayers        int
 	ReadinessTimeout time.Duration
 	ShutdownTimeout  time.Duration
+	AutoRestart      bool
+	AutoRestartDelay time.Duration
+	MaxAutoRestarts  int
 }
 
 // Profile provides a reusable, explicitly named local-model configuration.
@@ -54,31 +57,33 @@ type Profile struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Executable: "llama-server", Address: "127.0.0.1:8081", ContextSize: 2048, GPULayers: 99, ReadinessTimeout: 60 * time.Second, ShutdownTimeout: 10 * time.Second}
+	return Config{Executable: "llama-server", Address: "127.0.0.1:8081", ContextSize: 2048, GPULayers: 99, ReadinessTimeout: 60 * time.Second, ShutdownTimeout: 10 * time.Second, AutoRestartDelay: 2 * time.Second, MaxAutoRestarts: 3}
 }
 
 type Status struct {
-	State         State  `json:"state"`
-	PID           *int   `json:"pid,omitempty"`
-	ActiveModel   string `json:"active_model,omitempty"`
-	ActiveProfile string `json:"active_profile,omitempty"`
-	Healthy       bool   `json:"healthy"`
-	RestartCount  uint64 `json:"restart_count"`
+	State               State  `json:"state"`
+	PID                 *int   `json:"pid,omitempty"`
+	ActiveModel         string `json:"active_model,omitempty"`
+	ActiveProfile       string `json:"active_profile,omitempty"`
+	Healthy             bool   `json:"healthy"`
+	RestartCount        uint64 `json:"restart_count"`
+	AutoRestartAttempts uint32 `json:"auto_restart_attempts,omitempty"`
 }
 
 // Manager owns one registered model and one child process at a time.
 type Manager struct {
-	mu          sync.RWMutex
-	config      Config
-	baseConfig  Config
-	logger      *slog.Logger
-	client      *http.Client
-	status      Status
-	modelPath   string
-	profiles    map[string]Profile
-	process     *exec.Cmd
-	processDone chan struct{}
-	hasStarted  bool
+	mu                  sync.RWMutex
+	config              Config
+	baseConfig          Config
+	logger              *slog.Logger
+	client              *http.Client
+	status              Status
+	modelPath           string
+	profiles            map[string]Profile
+	process             *exec.Cmd
+	processDone         chan struct{}
+	hasStarted          bool
+	autoRestartAttempts uint32
 }
 
 func NewManager(config Config, logger *slog.Logger) *Manager {
@@ -291,8 +296,9 @@ func (m *Manager) waitUntilHealthy(ctx context.Context) error {
 
 func (m *Manager) watch(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
+	var restartDelay time.Duration
+	shouldRestart := false
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.process == cmd {
 		m.process, m.processDone, m.status.PID, m.status.Healthy = nil, nil, nil, false
 		if m.status.State == Stopping {
@@ -302,9 +308,37 @@ func (m *Manager) watch(cmd *exec.Cmd, done chan struct{}) {
 			if err != nil {
 				m.logger.Warn("runner process exited", "error", err)
 			}
+			if m.config.AutoRestart && m.modelPath != "" && m.autoRestartAttempts < uint32(m.config.MaxAutoRestarts) {
+				m.autoRestartAttempts++
+				m.status.AutoRestartAttempts = m.autoRestartAttempts
+				restartDelay, shouldRestart = m.config.AutoRestartDelay, true
+				m.logger.Warn("scheduling automatic runner restart", "attempt", m.autoRestartAttempts, "delay_ms", restartDelay.Milliseconds())
+			}
 		}
 	}
 	close(done)
+	m.mu.Unlock()
+	if shouldRestart {
+		go m.restartAfter(restartDelay)
+	}
+}
+
+func (m *Manager) restartAfter(delay time.Duration) {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+	m.mu.RLock()
+	eligible := m.status.State == Unhealthy && m.process == nil
+	readinessTimeout := m.config.ReadinessTimeout
+	m.mu.RUnlock()
+	if !eligible {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), readinessTimeout)
+	defer cancel()
+	if _, err := m.Start(ctx); err != nil {
+		m.logger.Warn("automatic runner restart failed", "error", err)
+	}
 }
 
 func (m *Manager) stopProcess(cmd *exec.Cmd, done chan struct{}) {
@@ -365,7 +399,7 @@ func validateRunnerConfig(config Config) error {
 	if err != nil || (host != "127.0.0.1" && host != "localhost") || port == "" {
 		return errors.New("runner address must be a localhost host:port")
 	}
-	if config.ContextSize <= 0 || config.GPULayers < 0 || config.ReadinessTimeout <= 0 || config.ShutdownTimeout <= 0 {
+	if config.ContextSize <= 0 || config.GPULayers < 0 || config.ReadinessTimeout <= 0 || config.ShutdownTimeout <= 0 || config.AutoRestartDelay <= 0 || config.MaxAutoRestarts < 0 {
 		return errors.New("runner configuration has invalid limits")
 	}
 	return nil

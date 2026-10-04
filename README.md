@@ -117,6 +117,10 @@ prompt was “Reply with exactly: benchmark complete”.
 These are machine- and prompt-specific observations, not general performance
 claims.
 
+The same machine also completed a recovery check: after terminating the managed
+`llama-server` child, LocalRunner changed status to `unhealthy`, started a new
+child successfully, and reported a restart count of 1.
+
 ## Local inference prerequisite
 
 Install/build a compatible `llama.cpp` `llama-server` executable and have a

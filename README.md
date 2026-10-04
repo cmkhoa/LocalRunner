@@ -1,0 +1,89 @@
+# LocalRunner
+
+LocalRunner is a small Go service that manages one local `llama.cpp` runner and
+exposes it through a localhost HTTP API. It owns process lifecycle, health,
+request queueing, and metrics; `llama.cpp` performs inference.
+
+## Current progress
+
+Phase 2 is complete. LocalRunner can validate and register a GGUF path, start
+one managed `llama-server` process, queue non-streaming chat requests FIFO, and
+stop the runner cleanly.
+
+## Run the foundation
+
+```sh
+go test ./...
+go run ./cmd/localrunner
+curl http://127.0.0.1:8080/v1/runners/status
+```
+
+Expected response:
+
+```json
+{"state":"stopped","healthy":false,"restart_count":0}
+```
+
+Set `LOCALRUNNER_LISTEN_ADDRESS` to another loopback `host:port` value if
+needed. Non-loopback addresses are rejected by design.
+
+## Register and run a model
+
+With the Homebrew-installed `llama-server` and the downloaded Qwen model:
+
+```sh
+go run ./cmd/localrunner
+
+curl -X POST http://127.0.0.1:8080/v1/models/register \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"/absolute/path/to/Qwen3-4B-Q4_K_M.gguf"}'
+
+curl -X POST http://127.0.0.1:8080/v1/runners/start
+curl http://127.0.0.1:8080/v1/runners/status
+curl -X POST http://127.0.0.1:8080/v1/runners/stop
+```
+
+The service starts the runner on `127.0.0.1:8081` by default and waits for its
+`/health` endpoint before returning `ready`. The runner uses a 2,048-token
+context and requests 99 GPU layers by default, which enables full Metal
+offload where the machine supports it.
+
+Configuration is intentionally process-level, never supplied in HTTP requests:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LOCALRUNNER_LISTEN_ADDRESS` | `127.0.0.1:8080` | LocalRunner API bind address |
+| `LOCALRUNNER_LLAMA_SERVER_PATH` | `llama-server` | Executable found on `PATH` or an explicit path |
+| `LOCALRUNNER_RUNNER_ADDRESS` | `127.0.0.1:8081` | Managed llama-server bind address |
+| `LOCALRUNNER_CONTEXT_SIZE` | `2048` | Runner context-token limit |
+| `LOCALRUNNER_GPU_LAYERS` | `99` | Requested GPU-offloaded layers |
+| `LOCALRUNNER_READINESS_TIMEOUT` | `60s` | Maximum start/readiness interval |
+| `LOCALRUNNER_SHUTDOWN_TIMEOUT` | `10s` | Graceful-stop limit before forced termination |
+
+## Chat completion
+
+Once the runner is `ready`, submit a non-streaming request through LocalRunner:
+
+```sh
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role":"user","content":"Say hello in one sentence."}],
+    "max_tokens": 64,
+    "chat_template_kwargs": {"enable_thinking": false}
+  }'
+```
+
+Requests are serialized through one worker to protect the active model. The
+queue holds at most 16 waiting requests; an overflow returns HTTP 429. Requests
+must contain 1–64 `system`, `user`, or `assistant` messages, at most 32 KiB of
+message text, and no more than 512 generated tokens. Streaming is intentionally
+not implemented in this release.
+
+## Local inference prerequisite
+
+Install/build a compatible `llama.cpp` `llama-server` executable and have a
+local GGUF model available. LocalRunner requires an explicit model path; it
+will not download models or accept shell command strings from HTTP requests.
+
+See [ROADMAP.md](ROADMAP.md) for the planned delivery phases and scope.

@@ -1,0 +1,3 @@
+# Local model weights are large, machine-specific artifacts.
+*.gguf
+*.gguf.download

@@ -27,6 +27,12 @@ Expected response:
 Set `LOCALRUNNER_LISTEN_ADDRESS` to another loopback `host:port` value if
 needed. Non-loopback addresses are rejected by design.
 
+For the standard development checks, run:
+
+```sh
+make verify
+```
+
 ## Register and run a model
 
 With the Homebrew-installed `llama-server` and the downloaded Qwen model:
@@ -91,6 +97,25 @@ latency, generated-token totals, and the average generation rate reported by
 Every response also includes an `X-Request-ID` header. JSON error bodies repeat
 that value as `error.request_id`; the same ID is written to completion logs with
 operational fields only (never prompt or generated text).
+
+## Measured result
+
+On this Apple Silicon (`arm64`) Mac running macOS 27.0.1, a sequential benchmark
+of 10 identical requests completed with no failures. The configuration was
+`Qwen3-4B-Q4_K_M.gguf`, `llama.cpp` 0.5.0, 2,048 context tokens, 99 requested
+GPU layers, temperature 0, a 16-token cap, and Qwen thinking disabled. The
+prompt was “Reply with exactly: benchmark complete”.
+
+| Metric | Observed value |
+| --- | ---: |
+| Successful requests | 10 / 10 |
+| Average end-to-end latency | 87.8 ms |
+| Average queue wait | 0.006 ms |
+| Generated tokens | 30 |
+| Average `llama.cpp` generation rate | 41.0 tokens/sec |
+
+These are machine- and prompt-specific observations, not general performance
+claims.
 
 ## Local inference prerequisite
 

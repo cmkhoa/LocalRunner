@@ -128,6 +128,40 @@ curl --no-buffer http://127.0.0.1:8080/v1/chat/completions \
   }'
 ```
 
+## Sample runs
+
+The following were run through LocalRunner with the local `qwen3-local` profile
+on this machine, using Qwen thinking disabled and temperature 0.
+
+### Standard completion
+
+Prompt: `In exactly one sentence, explain what a process supervisor does.`
+
+Observed response:
+
+> A process supervisor oversees and coordinates the operations of a process to
+> ensure it runs efficiently, meets objectives, and adheres to safety and
+> quality standards.
+
+The request generated 30 tokens at 41.36 tokens/sec according to `llama.cpp`.
+
+### Streamed completion
+
+Prompt: `Reply with exactly: streaming is live`
+
+Observed SSE content chunks:
+
+```text
+stream
+ing
+ is
+ live
+[DONE]
+```
+
+Together, those chunks produce `streaming is live`. The final SSE event reported
+5 generated tokens at 40.08 tokens/sec.
+
 ## Metrics
 
 `GET /metrics` returns process-lifetime JSON aggregates without retaining

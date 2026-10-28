@@ -115,3 +115,14 @@ single local runner unresponsive under retries or abandoned streams.
 
 **Consequence:** The queue checks the request context immediately before it
 invokes work, and a regression test covers cancellation after enqueueing.
+
+## 2026-10-27 — README as an entry point, detailed docs by task
+
+**Choice:** Keep the root README focused on the product, a fast first run, and
+links; organize setup, API, and operations details in dedicated guides.
+
+**Why:** A single long README makes both onboarding and reference lookup slow
+as the service gains operational features.
+
+**Consequence:** The root page stays concise while the detailed guides can grow
+independently without obscuring the normal developer workflow.

@@ -6,9 +6,9 @@ request queueing, and metrics; `llama.cpp` performs inference.
 
 ## Current progress
 
-Phase 2 is complete. LocalRunner can validate and register a GGUF path, start
-one managed `llama-server` process, queue non-streaming chat requests FIFO, and
-stop the runner cleanly.
+The MVP and its initial stretch features are complete. LocalRunner can manage a
+local GGUF runner, queue regular or streamed chat requests, report operational
+metrics, reuse model profiles, and optionally recover from a child-process exit.
 
 ## Run the foundation
 
@@ -31,6 +31,34 @@ For the standard development checks, run:
 
 ```sh
 make verify
+```
+
+Build both the server and terminal client with:
+
+```sh
+make build
+```
+
+## CLI client
+
+`localrunnerctl` wraps the localhost API for the common workflow. Run it without
+installing anything else:
+
+```sh
+go run ./cmd/localrunnerctl status
+go run ./cmd/localrunnerctl profiles
+go run ./cmd/localrunnerctl activate qwen3-local
+go run ./cmd/localrunnerctl start
+go run ./cmd/localrunnerctl chat "Explain LocalRunner in one sentence."
+go run ./cmd/localrunnerctl metrics
+go run ./cmd/localrunnerctl stop
+```
+
+Use `--stream` to print raw server-sent events and `--address` (or
+`LOCALRUNNER_API_URL`) to target a non-default local API address:
+
+```sh
+go run ./cmd/localrunnerctl --address http://127.0.0.1:8183 chat --stream "Count to three."
 ```
 
 ## Register and run a model

@@ -1,4 +1,4 @@
-.PHONY: fmt check-format test vet verify run
+.PHONY: fmt check-format test vet verify run build
 
 fmt:
 	gofmt -w $$(find cmd internal -name '*.go' -type f)
@@ -16,3 +16,6 @@ verify: check-format test vet
 
 run:
 	go run ./cmd/localrunner
+
+build:
+	go build ./cmd/localrunner ./cmd/localrunnerctl

@@ -4,6 +4,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -12,7 +13,9 @@ var ErrFull = errors.New("request queue is full")
 
 // Queue serializes work to protect a single local inference runner.
 type Queue[T any] struct {
-	jobs chan job[T]
+	jobs    chan job[T]
+	mu      sync.Mutex
+	waiting int
 }
 
 type job[T any] struct {
@@ -45,14 +48,29 @@ func New[T any](capacity int) *Queue[T] {
 // skipped by the worker, so callers that time out while waiting do not cause an
 // unnecessary upstream request.
 func (q *Queue[T]) Submit(ctx context.Context, work func(context.Context) (T, error)) (T, Stats, error) {
+	return q.SubmitWithLimit(ctx, cap(q.jobs), work)
+}
+
+// SubmitWithLimit applies a per-request waiting limit without adding workers.
+// The queue's physical capacity must be at least limit.
+func (q *Queue[T]) SubmitWithLimit(ctx context.Context, limit int, work func(context.Context) (T, error)) (T, Stats, error) {
 	var zero T
+	if limit <= 0 || limit > cap(q.jobs) {
+		return zero, Stats{}, ErrFull
+	}
 	job := job[T]{ctx: ctx, work: work, result: make(chan result[T], 1), enqueued: time.Now()}
+	q.mu.Lock()
+	if q.waiting >= limit {
+		q.mu.Unlock()
+		return zero, Stats{}, ErrFull
+	}
+	q.waiting++
+	q.mu.Unlock()
 	select {
 	case q.jobs <- job:
 	case <-ctx.Done():
+		q.releaseWaiting()
 		return zero, Stats{}, ctx.Err()
-	default:
-		return zero, Stats{}, ErrFull
 	}
 	select {
 	case result := <-job.result:
@@ -64,6 +82,7 @@ func (q *Queue[T]) Submit(ctx context.Context, work func(context.Context) (T, er
 
 func (q *Queue[T]) run() {
 	for job := range q.jobs {
+		q.releaseWaiting()
 		stats := Stats{Wait: time.Since(job.enqueued)}
 		if err := job.ctx.Err(); err != nil {
 			job.result <- result[T]{err: err, stats: stats}
@@ -74,4 +93,10 @@ func (q *Queue[T]) run() {
 		stats.Service = time.Since(started)
 		job.result <- result[T]{value: value, err: err, stats: stats}
 	}
+}
+
+func (q *Queue[T]) releaseWaiting() {
+	q.mu.Lock()
+	q.waiting--
+	q.mu.Unlock()
 }

@@ -109,3 +109,43 @@ func TestQueueSkipsCanceledQueuedWork(t *testing.T) {
 	default:
 	}
 }
+
+func TestQueueEnforcesPerSubmissionLimit(t *testing.T) {
+	queue := New[int](2)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := queue.Submit(context.Background(), func(context.Context) (int, error) {
+			close(entered)
+			<-release
+			return 1, nil
+		})
+		firstDone <- err
+	}()
+	<-entered
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, _, err := queue.SubmitWithLimit(context.Background(), 1, func(context.Context) (int, error) { return 2, nil })
+		secondDone <- err
+	}()
+	deadline := time.After(time.Second)
+	for len(queue.jobs) != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("second request was not queued")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if _, _, err := queue.SubmitWithLimit(context.Background(), 1, func(context.Context) (int, error) { return 3, nil }); !errors.Is(err, ErrFull) {
+		t.Fatalf("third request error = %v, want ErrFull", err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+}

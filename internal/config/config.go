@@ -93,6 +93,19 @@ func FromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	for _, profile := range profiles {
+		maxTokens := apiConfig.MaxGeneratedTokens
+		if profile.MaxGeneratedTokens > 0 {
+			maxTokens = profile.MaxGeneratedTokens
+		}
+		defaultTokens := apiConfig.DefaultMaxTokens
+		if profile.DefaultMaxTokens > 0 {
+			defaultTokens = profile.DefaultMaxTokens
+		}
+		if defaultTokens > maxTokens {
+			return Config{}, fmt.Errorf("profile %q default max tokens must not exceed max generated tokens", profile.Name)
+		}
+	}
 	return Config{ListenAddress: listenAddress, Runner: runnerConfig, API: apiConfig, Profiles: profiles}, nil
 }
 

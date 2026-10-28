@@ -137,3 +137,15 @@ API, queue worker, HTTP client, and upstream response stream.
 
 **Consequence:** The API depends on a narrow internal runner interface, while
 the production `runner.Manager` remains its implementation.
+
+## 2026-10-27 — Per-profile limits retain one shared FIFO worker
+
+**Choice:** Let profiles override readiness and request timeouts, output-token
+limits, and queue admission capacity while retaining one physical queue and one
+inference worker.
+
+**Why:** Models need different operating budgets, but separate profile queues
+would weaken the single-runner overload guarantee.
+
+**Consequence:** The queue is sized for the largest configured profile and
+enforces the active profile's smaller limit atomically at submission time.

@@ -24,7 +24,9 @@ not through HTTP. Restart the service after changing them.
 | `LOCALRUNNER_PROFILES_PATH` | unset | Path to named-profile JSON |
 
 The queue has one worker. Requests execute FIFO; canceled queued work is
-skipped. A long-lived stream occupies that worker until it ends.
+skipped. A long-lived stream occupies that worker until it ends. Named profiles
+may override `readiness_timeout`, `request_timeout`, `max_generated_tokens`,
+`default_max_tokens`, and `queue_capacity`; omitted values inherit this table.
 
 ## Health, recovery, and diagnostics
 

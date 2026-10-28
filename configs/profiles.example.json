@@ -3,7 +3,12 @@
     "qwen3-4b": {
       "model_path": "/absolute/path/to/Qwen3-4B-Q4_K_M.gguf",
       "context_size": 2048,
-      "gpu_layers": 99
+      "gpu_layers": 99,
+      "readiness_timeout": "60s",
+      "request_timeout": "2m",
+      "max_generated_tokens": 512,
+      "default_max_tokens": 256,
+      "queue_capacity": 16
     }
   }
 }

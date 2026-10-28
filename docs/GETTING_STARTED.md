@@ -47,8 +47,10 @@ go run ./cmd/localrunnerctl activate qwen3-4b
 go run ./cmd/localrunnerctl start
 ```
 
-Profiles include a model path, context size, and GPU-layer setting. A profile
-may be activated only while the runner is stopped or unhealthy.
+Profiles include a model path, context size, GPU-layer setting, and optional
+readiness/request timeouts, output-token limits, and queue capacity. Omitted
+limits inherit the service defaults. A profile may be activated only while the
+runner is stopped or unhealthy.
 
 For endpoint-level examples, see the [API reference](API.md). For limits and
 environment variables, see [Operations and configuration](OPERATIONS.md).

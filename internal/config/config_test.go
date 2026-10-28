@@ -46,6 +46,27 @@ func TestFromEnvLoadsProfiles(t *testing.T) {
 	}
 }
 
+func TestFromEnvLoadsProfileRuntimeLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profiles.json")
+	contents := []byte(`{"profiles":{"small":{"model_path":"/tmp/model.gguf","readiness_timeout":"30s","request_timeout":"5s","max_generated_tokens":32,"default_max_tokens":16,"queue_capacity":2}}}`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LOCALRUNNER_PROFILES_PATH", path)
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	profile := cfg.Profiles[0]
+	if got, want := profile.RequestTimeout, "5s"; got != want {
+		t.Errorf("RequestTimeout = %q, want %q", got, want)
+	}
+	if got, want := profile.QueueCapacity, 2; got != want {
+		t.Errorf("QueueCapacity = %d, want %d", got, want)
+	}
+}
+
 func TestFromEnvLoadsAutoRestartSettings(t *testing.T) {
 	t.Setenv("LOCALRUNNER_AUTO_RESTART", "true")
 	t.Setenv("LOCALRUNNER_AUTO_RESTART_DELAY", "3s")

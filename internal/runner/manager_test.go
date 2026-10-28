@@ -50,7 +50,7 @@ func TestActivateProfileSelectsValidatedModelAndSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := NewManager(DefaultConfig(), slog.Default())
-	if err := manager.AddProfile(Profile{Name: "small", ModelPath: path, ContextSize: 1024, GPULayers: 4}); err != nil {
+	if err := manager.AddProfile(Profile{Name: "small", ModelPath: path, ContextSize: 1024, GPULayers: 4, ReadinessTimeout: "3s"}); err != nil {
 		t.Fatalf("AddProfile() error = %v", err)
 	}
 	status, err := manager.ActivateProfile("small")
@@ -62,6 +62,9 @@ func TestActivateProfileSelectsValidatedModelAndSettings(t *testing.T) {
 	}
 	if got, want := status.ActiveProfile, "small"; got != want {
 		t.Errorf("ActiveProfile = %q, want %q", got, want)
+	}
+	if got, want := manager.config.ReadinessTimeout.String(), "3s"; got != want {
+		t.Errorf("ReadinessTimeout = %q, want %q", got, want)
 	}
 	profiles := manager.Profiles()
 	if len(profiles) != 1 || profiles[0].Name != "small" {

@@ -110,7 +110,13 @@ func newHandler(manager runnerService, logger *slog.Logger, config Config) http.
 	if err := config.Validate(); err != nil {
 		panic(fmt.Sprintf("invalid API config: %v", err))
 	}
-	h := &Handler{runner: manager, logger: logger, queue: queue.New[chatResult](config.QueueCapacity), client: &http.Client{Timeout: config.RequestTimeout}, metrics: metrics.New(), config: config}
+	physicalQueueCapacity := config.QueueCapacity
+	for _, profile := range manager.Profiles() {
+		if profile.QueueCapacity > physicalQueueCapacity {
+			physicalQueueCapacity = profile.QueueCapacity
+		}
+	}
+	h := &Handler{runner: manager, logger: logger, queue: queue.New[chatResult](physicalQueueCapacity), client: &http.Client{Timeout: config.RequestTimeout}, metrics: metrics.New(), config: config}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/runners/status", h.runnerStatus)
 	mux.HandleFunc("POST /v1/models/register", h.registerModel)
@@ -251,13 +257,14 @@ func (e *streamStartedError) Unwrap() error { return e.err }
 func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := requestIDFromRequest(r)
+	limits := h.activeLimits()
 	var request chatRequest
 	if err := h.decodeJSON(w, r, &request); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: "invalid_request", Latency: time.Since(started)})
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if err := request.validate(h.config.MaxInputBytes, h.config.MaxGeneratedTokens); err != nil {
+	if err := request.validate(limits.MaxInputBytes, limits.MaxGeneratedTokens); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: "invalid_request", Latency: time.Since(started)})
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -267,13 +274,13 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.MaxTokens == 0 {
-		request.MaxTokens = h.config.DefaultMaxTokens
+		request.MaxTokens = limits.DefaultMaxTokens
 	}
 	request.Stream = false
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.config.RequestTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), limits.RequestTimeout)
 	defer cancel()
-	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
+	result, queueStats, err := h.queue.SubmitWithLimit(ctx, limits.QueueCapacity, func(ctx context.Context) (chatResult, error) {
 		response, err := h.proxyChat(ctx, request)
 		return chatResult{response: response}, err
 	})
@@ -293,8 +300,9 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 // The queue worker owns the ResponseWriter while this handler waits, so the
 // active runner remains protected for the entire stream duration.
 func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, request chatRequest, started time.Time, requestID string) {
+	limits := h.activeLimits()
 	if request.MaxTokens == 0 {
-		request.MaxTokens = h.config.DefaultMaxTokens
+		request.MaxTokens = limits.DefaultMaxTokens
 	}
 	if _, err := h.runner.ChatEndpoint(); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), Latency: time.Since(started)})
@@ -302,10 +310,10 @@ func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.config.RequestTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), limits.RequestTimeout)
 	defer cancel()
 	var streamStarted atomic.Bool
-	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
+	result, queueStats, err := h.queue.SubmitWithLimit(ctx, limits.QueueCapacity, func(ctx context.Context) (chatResult, error) {
 		return h.proxyStream(ctx, request, w, &streamStarted)
 	})
 	if err != nil {
@@ -320,6 +328,39 @@ func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, r
 	}
 	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started), GeneratedTokens: result.generatedTokens, GenerationDuration: result.generationDuration, TokensPerSecond: result.tokensPerSecond})
 	h.logger.Info("streamed chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds(), "generated_tokens", result.generatedTokens, "tokens_per_second", result.tokensPerSecond)
+}
+
+// activeLimits overlays the selected profile's safe runtime controls on the
+// process defaults. Profiles can only be changed while the runner is stopped
+// or unhealthy, so each request sees one stable active profile.
+func (h *Handler) activeLimits() Config {
+	limits := h.config
+	activeProfile := h.runner.Status().ActiveProfile
+	if activeProfile == "" {
+		return limits
+	}
+	for _, profile := range h.runner.Profiles() {
+		if profile.Name != activeProfile {
+			continue
+		}
+		if profile.MaxGeneratedTokens > 0 {
+			limits.MaxGeneratedTokens = profile.MaxGeneratedTokens
+		}
+		if profile.DefaultMaxTokens > 0 {
+			limits.DefaultMaxTokens = profile.DefaultMaxTokens
+		}
+		if profile.QueueCapacity > 0 {
+			limits.QueueCapacity = profile.QueueCapacity
+		}
+		if profile.RequestTimeout != "" {
+			limits.RequestTimeout, _ = time.ParseDuration(profile.RequestTimeout)
+		}
+		if limits.DefaultMaxTokens > limits.MaxGeneratedTokens {
+			limits.DefaultMaxTokens = limits.MaxGeneratedTokens
+		}
+		return limits
+	}
+	return limits
 }
 
 func chatErrorCategory(err error) string {

@@ -15,11 +15,20 @@ import (
 	"localrunner/internal/runner"
 )
 
-type mockRunner struct{ endpoint string }
+type mockRunner struct {
+	endpoint string
+	status   runner.Status
+	profiles []runner.Profile
+}
 
-func (m mockRunner) Status() runner.Status                         { return runner.Status{State: runner.Ready, Healthy: true} }
+func (m mockRunner) Status() runner.Status {
+	if m.status.State != "" {
+		return m.status
+	}
+	return runner.Status{State: runner.Ready, Healthy: true}
+}
 func (m mockRunner) Register(string) (runner.Status, error)        { return m.Status(), nil }
-func (m mockRunner) Profiles() []runner.Profile                    { return nil }
+func (m mockRunner) Profiles() []runner.Profile                    { return m.profiles }
 func (m mockRunner) ActivateProfile(string) (runner.Status, error) { return m.Status(), nil }
 func (m mockRunner) Start(context.Context) (runner.Status, error)  { return m.Status(), nil }
 func (m mockRunner) Stop(context.Context) (runner.Status, error) {
@@ -99,6 +108,30 @@ func TestStreamingClientCancellationCancelsMockRunner(t *testing.T) {
 	case <-upstreamCanceled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream stream was not canceled after client disconnect")
+	}
+}
+
+func TestActiveLimitsUseSelectedProfile(t *testing.T) {
+	defaults := DefaultConfig()
+	defaults.DefaultMaxTokens = 16
+	defaults.QueueCapacity = 2
+	handler := &Handler{runner: mockRunner{
+		status:   runner.Status{State: runner.Ready, Healthy: true, ActiveProfile: "small"},
+		profiles: []runner.Profile{{Name: "small", RequestTimeout: "3s", MaxGeneratedTokens: 8, QueueCapacity: 1}},
+	}, config: defaults}
+
+	limits := handler.activeLimits()
+	if got, want := limits.RequestTimeout.String(), "3s"; got != want {
+		t.Errorf("RequestTimeout = %q, want %q", got, want)
+	}
+	if got, want := limits.MaxGeneratedTokens, 8; got != want {
+		t.Errorf("MaxGeneratedTokens = %d, want %d", got, want)
+	}
+	if got, want := limits.DefaultMaxTokens, 8; got != want {
+		t.Errorf("DefaultMaxTokens = %d, want %d", got, want)
+	}
+	if got, want := limits.QueueCapacity, 1; got != want {
+		t.Errorf("QueueCapacity = %d, want %d", got, want)
 	}
 }
 

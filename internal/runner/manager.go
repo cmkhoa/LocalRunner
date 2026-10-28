@@ -50,10 +50,15 @@ type Config struct {
 // Profile provides a reusable, explicitly named local-model configuration.
 // It intentionally exposes only safe runtime settings, never raw arguments.
 type Profile struct {
-	Name        string `json:"name"`
-	ModelPath   string `json:"model_path"`
-	ContextSize int    `json:"context_size,omitempty"`
-	GPULayers   int    `json:"gpu_layers,omitempty"`
+	Name               string `json:"name"`
+	ModelPath          string `json:"model_path"`
+	ContextSize        int    `json:"context_size,omitempty"`
+	GPULayers          int    `json:"gpu_layers,omitempty"`
+	ReadinessTimeout   string `json:"readiness_timeout,omitempty"`
+	RequestTimeout     string `json:"request_timeout,omitempty"`
+	MaxGeneratedTokens int    `json:"max_generated_tokens,omitempty"`
+	DefaultMaxTokens   int    `json:"default_max_tokens,omitempty"`
+	QueueCapacity      int    `json:"queue_capacity,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -158,6 +163,9 @@ func (m *Manager) ActivateProfile(name string) (Status, error) {
 	}
 	if profile.GPULayers > 0 {
 		m.config.GPULayers = profile.GPULayers
+	}
+	if profile.ReadinessTimeout != "" {
+		m.config.ReadinessTimeout, _ = time.ParseDuration(profile.ReadinessTimeout)
 	}
 	m.status.ActiveModel = filepath.Base(profile.ModelPath)
 	m.status.ActiveProfile = profile.Name
@@ -392,8 +400,21 @@ func (m *Manager) validateProfile(profile Profile) (Profile, error) {
 		return Profile{}, err
 	}
 	profile.ModelPath = modelPath
-	if profile.ContextSize < 0 || profile.GPULayers < 0 {
+	if profile.ContextSize < 0 || profile.GPULayers < 0 || profile.MaxGeneratedTokens < 0 || profile.DefaultMaxTokens < 0 || profile.QueueCapacity < 0 {
 		return Profile{}, errors.New("profile runtime settings must not be negative")
+	}
+	if profile.ReadinessTimeout != "" {
+		if duration, err := time.ParseDuration(profile.ReadinessTimeout); err != nil || duration <= 0 {
+			return Profile{}, errors.New("profile readiness timeout must be a positive Go duration")
+		}
+	}
+	if profile.RequestTimeout != "" {
+		if duration, err := time.ParseDuration(profile.RequestTimeout); err != nil || duration <= 0 {
+			return Profile{}, errors.New("profile request timeout must be a positive Go duration")
+		}
+	}
+	if profile.DefaultMaxTokens > 0 && profile.MaxGeneratedTokens > 0 && profile.DefaultMaxTokens > profile.MaxGeneratedTokens {
+		return Profile{}, errors.New("profile default max tokens must not exceed max generated tokens")
 	}
 	return profile, nil
 }

@@ -104,3 +104,14 @@ full log stream.
 
 **Consequence:** Diagnostics are stripped of control characters and capped at
 256 bytes; they intentionally never include request prompts or responses.
+
+## 2026-10-27 — Cancellation is a queue-level guarantee
+
+**Choice:** Treat a canceled request that is waiting in the FIFO queue as work
+that must never be sent upstream.
+
+**Why:** Letting a disconnected client consume inference time would make a
+single local runner unresponsive under retries or abandoned streams.
+
+**Consequence:** The queue checks the request context immediately before it
+invokes work, and a regression test covers cancellation after enqueueing.

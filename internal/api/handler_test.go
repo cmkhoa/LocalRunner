@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"localrunner/internal/api"
@@ -61,6 +63,33 @@ func TestStreamingChatRequiresReadyRunner(t *testing.T) {
 	}
 	if payload.Error.RequestID == "" || payload.Error.RequestID != response.Header().Get("X-Request-ID") {
 		t.Errorf("request ID = %q, header = %q", payload.Error.RequestID, response.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestListModelsUsesProfileNamesInsteadOfPaths(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "private-model.gguf")
+	if err := os.WriteFile(path, []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	logger := slog.New(slog.NewTextHandler(testWriter{t}, nil))
+	manager := runner.NewManager(runner.DefaultConfig(), logger)
+	if err := manager.AddProfile(runner.Profile{Name: "local-qwen", ModelPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	handler := api.NewHandler(manager, logger)
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusOK)
+	}
+	if got, want := response.Body.String(), "{\"data\":[{\"created\":0,\"id\":\"local-qwen\",\"object\":\"model\",\"owned_by\":\"localrunner\"}],\"object\":\"list\"}\n"; got != want {
+		t.Errorf("response body = %q, want %q", got, want)
+	}
+	if bytes.Contains(response.Body.Bytes(), []byte(path)) {
+		t.Error("model response leaked an absolute filesystem path")
 	}
 }
 

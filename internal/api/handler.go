@@ -34,7 +34,7 @@ const (
 type Handler struct {
 	runner  *runner.Manager
 	logger  *slog.Logger
-	queue   *queue.Queue[json.RawMessage]
+	queue   *queue.Queue[chatResult]
 	client  *http.Client
 	metrics *metrics.Collector
 }
@@ -43,7 +43,7 @@ type requestIDKey struct{}
 
 // NewHandler constructs the v1 API handler.
 func NewHandler(manager *runner.Manager, logger *slog.Logger) http.Handler {
-	h := &Handler{runner: manager, logger: logger, queue: queue.New[json.RawMessage](queueCapacity), client: &http.Client{Timeout: requestTimeout}, metrics: metrics.New()}
+	h := &Handler{runner: manager, logger: logger, queue: queue.New[chatResult](queueCapacity), client: &http.Client{Timeout: requestTimeout}, metrics: metrics.New()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/runners/status", h.runnerStatus)
 	mux.HandleFunc("POST /v1/models/register", h.registerModel)
@@ -140,6 +140,19 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
+type chatResult struct {
+	response           json.RawMessage
+	generatedTokens    int
+	generationDuration time.Duration
+	tokensPerSecond    float64
+	streamStarted      bool
+}
+
+type streamStartedError struct{ err error }
+
+func (e *streamStartedError) Error() string { return e.err.Error() }
+func (e *streamStartedError) Unwrap() error { return e.err }
+
 func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := requestIDFromRequest(r)
@@ -165,19 +178,20 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
-	response, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (json.RawMessage, error) {
-		return h.proxyChat(ctx, request)
+	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
+		response, err := h.proxyChat(ctx, request)
+		return chatResult{response: response}, err
 	})
 	if err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), QueueWait: queueStats.Wait, Latency: time.Since(started)})
 		h.writeChatError(w, requestID, err)
 		return
 	}
-	generatedTokens, generationDuration, tokensPerSecond := responseMetrics(response)
+	generatedTokens, generationDuration, tokensPerSecond := responseMetrics(result.response)
 	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started), GeneratedTokens: generatedTokens, GenerationDuration: generationDuration, TokensPerSecond: tokensPerSecond})
 	h.logger.Info("chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds(), "generated_tokens", generatedTokens, "tokens_per_second", tokensPerSecond)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(response)
+	_, _ = w.Write(result.response)
 }
 
 // streamChatCompletion proxies llama.cpp's OpenAI-style server-sent events.
@@ -195,16 +209,21 @@ func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, r
 
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
-	_, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (json.RawMessage, error) {
-		return nil, h.proxyStream(ctx, request, w)
+	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
+		return h.proxyStream(ctx, request, w)
 	})
 	if err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), QueueWait: queueStats.Wait, Latency: time.Since(started)})
+		var streamed *streamStartedError
+		if errors.As(err, &streamed) {
+			h.logger.Warn("streamed chat completion interrupted", "request_id", requestID, "error", err)
+			return
+		}
 		h.writeChatError(w, requestID, err)
 		return
 	}
-	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started)})
-	h.logger.Info("streamed chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds())
+	h.metrics.Record(metrics.Request{Succeeded: true, QueueWait: queueStats.Wait, Latency: time.Since(started), GeneratedTokens: result.generatedTokens, GenerationDuration: result.generationDuration, TokensPerSecond: result.tokensPerSecond})
+	h.logger.Info("streamed chat completion completed", "request_id", requestID, "queue_wait_ms", queueStats.Wait.Milliseconds(), "latency_ms", time.Since(started).Milliseconds(), "generated_tokens", result.generatedTokens, "tokens_per_second", result.tokensPerSecond)
 }
 
 func chatErrorCategory(err error) string {
@@ -228,12 +247,17 @@ func responseMetrics(response json.RawMessage) (int, time.Duration, float64) {
 		Timings struct {
 			PredictedMS        float64 `json:"predicted_ms"`
 			PredictedPerSecond float64 `json:"predicted_per_second"`
+			PredictedN         int     `json:"predicted_n"`
 		} `json:"timings"`
 	}
 	if err := json.Unmarshal(response, &payload); err != nil {
 		return 0, 0, 0
 	}
-	return payload.Usage.CompletionTokens, time.Duration(payload.Timings.PredictedMS * float64(time.Millisecond)), payload.Timings.PredictedPerSecond
+	tokens := payload.Usage.CompletionTokens
+	if tokens == 0 {
+		tokens = payload.Timings.PredictedN
+	}
+	return tokens, time.Duration(payload.Timings.PredictedMS * float64(time.Millisecond)), payload.Timings.PredictedPerSecond
 }
 
 func (request chatRequest) validate() error {
@@ -300,31 +324,32 @@ func (h *Handler) proxyChat(ctx context.Context, chat chatRequest) (json.RawMess
 	return json.RawMessage(responseBody), nil
 }
 
-func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http.ResponseWriter) error {
+func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http.ResponseWriter) (chatResult, error) {
+	var result chatResult
 	endpoint, err := h.runner.ChatEndpoint()
 	if err != nil {
-		return err
+		return result, err
 	}
 	body, err := json.Marshal(chat)
 	if err != nil {
-		return fmt.Errorf("encode upstream request: %w", err)
+		return result, fmt.Errorf("encode upstream request: %w", err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build upstream request: %w", err)
+		return result, fmt.Errorf("build upstream request: %w", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
 	response, err := h.client.Do(request)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return context.DeadlineExceeded
+			return result, context.DeadlineExceeded
 		}
-		return fmt.Errorf("upstream request: %w", err)
+		return result, fmt.Errorf("upstream request: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("upstream failure: HTTP %d", response.StatusCode)
+		return result, fmt.Errorf("upstream failure: HTTP %d", response.StatusCode)
 	}
 
 	writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
@@ -332,25 +357,38 @@ func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http
 	writer.Header().Set("Connection", "keep-alive")
 	flusher, ok := writer.(http.Flusher)
 	if !ok {
-		return errors.New("response writer does not support streaming")
+		return result, errors.New("response writer does not support streaming")
 	}
 	writer.WriteHeader(http.StatusOK)
+	result.streamStarted = true
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 1024), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if data := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:"))); json.Valid(data) {
+			tokens, duration, tokensPerSecond := responseMetrics(json.RawMessage(data))
+			if tokens > 0 {
+				result.generatedTokens = tokens
+			}
+			if duration > 0 {
+				result.generationDuration = duration
+			}
+			if tokensPerSecond > 0 {
+				result.tokensPerSecond = tokensPerSecond
+			}
+		}
 		if _, err := writer.Write(append(append([]byte(nil), line...), '\n')); err != nil {
-			return fmt.Errorf("write stream: %w", err)
+			return result, &streamStartedError{err: fmt.Errorf("write stream: %w", err)}
 		}
 		flusher.Flush()
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return context.DeadlineExceeded
+			return result, &streamStartedError{err: context.DeadlineExceeded}
 		}
-		return fmt.Errorf("read upstream stream: %w", err)
+		return result, &streamStartedError{err: fmt.Errorf("read upstream stream: %w", err)}
 	}
-	return nil
+	return result, nil
 }
 
 func (h *Handler) withJSON(next http.Handler) http.Handler {

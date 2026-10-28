@@ -196,7 +196,8 @@ Together, those chunks produce `streaming is live`. The final SSE event reported
 prompts or responses. It includes successful/failed request counts and error
 categories, total and average queue waiting time, total and average end-to-end
 latency, generated-token totals, and the average generation rate reported by
-`llama.cpp` for successful requests. Metrics reset whenever LocalRunner restarts.
+`llama.cpp` for successful regular and streamed requests. Metrics reset whenever
+LocalRunner restarts.
 
 Every response also includes an `X-Request-ID` header. JSON error bodies repeat
 that value as `error.request_id`; the same ID is written to completion logs with

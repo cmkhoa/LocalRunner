@@ -110,6 +110,10 @@ waits for the configured delay and retries. It stops scheduling attempts after
 the configured maximum, avoiding an unbounded crash loop. Explicit stop requests
 never schedule a restart.
 
+When a start attempt or child process fails, `GET /v1/runners/status` includes
+a bounded `last_error` diagnostic. It excludes prompt and response data and is
+cleared after the runner becomes healthy or is deliberately stopped.
+
 ### Named model profiles
 
 For repeatable settings, set `LOCALRUNNER_PROFILES_PATH` to a JSON file shaped

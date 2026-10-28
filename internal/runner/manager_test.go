@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,21 @@ func TestActivateProfileSelectsValidatedModelAndSettings(t *testing.T) {
 	profiles := manager.Profiles()
 	if len(profiles) != 1 || profiles[0].Name != "small" {
 		t.Errorf("Profiles() = %#v, want small", profiles)
+	}
+}
+
+func TestDiagnosticIsBoundedAndSafeForStatus(t *testing.T) {
+	value := diagnostic("runner failed\n" + strings.Repeat("x", 300))
+	if strings.ContainsAny(value, "\n\r\t") {
+		t.Errorf("diagnostic contains a control character: %q", value)
+	}
+	if got, want := value[:13], "runner failed"; got != want {
+		t.Errorf("diagnostic prefix = %q, want %q", got, want)
+	}
+	if !strings.HasSuffix(value, "…") {
+		t.Errorf("diagnostic = %q, want truncated suffix", value)
+	}
+	if len(value) > 256 {
+		t.Errorf("diagnostic length = %d, want at most 256", len(value))
 	}
 }

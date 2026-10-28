@@ -68,6 +68,7 @@ type Status struct {
 	Healthy             bool   `json:"healthy"`
 	RestartCount        uint64 `json:"restart_count"`
 	AutoRestartAttempts uint32 `json:"auto_restart_attempts,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
 }
 
 // Manager owns one registered model and one child process at a time.
@@ -108,6 +109,7 @@ func (m *Manager) Register(path string) (Status, error) {
 	m.config = m.baseConfig
 	m.status.ActiveModel = filepath.Base(absPath)
 	m.status.ActiveProfile = ""
+	m.status.LastError = ""
 	return m.status, nil
 }
 
@@ -159,6 +161,7 @@ func (m *Manager) ActivateProfile(name string) (Status, error) {
 	}
 	m.status.ActiveModel = filepath.Base(profile.ModelPath)
 	m.status.ActiveProfile = profile.Name
+	m.status.LastError = ""
 	return m.status, nil
 }
 
@@ -193,7 +196,7 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 	}
 	pid := cmd.Process.Pid
 	m.process, m.processDone = cmd, make(chan struct{})
-	m.status.State, m.status.PID, m.status.Healthy = Starting, &pid, false
+	m.status.State, m.status.PID, m.status.Healthy, m.status.LastError = Starting, &pid, false, ""
 	done := m.processDone
 	m.mu.Unlock()
 	go m.watch(cmd, done)
@@ -204,6 +207,7 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 		m.mu.Lock()
 		if m.process == cmd {
 			m.status.State, m.status.Healthy = Unhealthy, false
+			m.status.LastError = diagnostic("runner readiness check failed: " + err.Error())
 		}
 		m.mu.Unlock()
 		return Status{}, fmt.Errorf("runner readiness check: %w", err)
@@ -213,7 +217,7 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 	if m.process != cmd || m.status.State != Starting {
 		return Status{}, fmt.Errorf("%w: runner stopped while starting", ErrInvalidState)
 	}
-	m.status.State, m.status.Healthy = Ready, true
+	m.status.State, m.status.Healthy, m.status.LastError = Ready, true, ""
 	if m.hasStarted {
 		m.status.RestartCount++
 	}
@@ -302,11 +306,14 @@ func (m *Manager) watch(cmd *exec.Cmd, done chan struct{}) {
 	if m.process == cmd {
 		m.process, m.processDone, m.status.PID, m.status.Healthy = nil, nil, nil, false
 		if m.status.State == Stopping {
-			m.status.State = Stopped
+			m.status.State, m.status.LastError = Stopped, ""
 		} else {
 			m.status.State = Unhealthy
 			if err != nil {
+				m.status.LastError = diagnostic("runner process exited: " + err.Error())
 				m.logger.Warn("runner process exited", "error", err)
+			} else {
+				m.status.LastError = "runner process exited unexpectedly"
 			}
 			if m.config.AutoRestart && m.modelPath != "" && m.autoRestartAttempts < uint32(m.config.MaxAutoRestarts) {
 				m.autoRestartAttempts++
@@ -415,4 +422,20 @@ func (w logWriter) Write(data []byte) (int, error) {
 		w.logger.Debug("llama-server output", "stream", w.stream, "message", message)
 	}
 	return len(data), nil
+}
+
+// diagnostic keeps status output useful without copying unbounded or
+// control-character-containing child-process output into the public API.
+func diagnostic(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, value)
+	const maxDiagnosticBytes = 256
+	if len(value) > maxDiagnosticBytes {
+		return value[:maxDiagnosticBytes-len("…")] + "…"
+	}
+	return value
 }

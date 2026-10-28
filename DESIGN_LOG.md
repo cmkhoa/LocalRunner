@@ -92,3 +92,15 @@ per request or profile would create unclear behavior for work already queued.
 **Consequence:** Operators can tune a local machine without a rebuild, but
 must restart LocalRunner for a change to take effect. Profile-specific limits
 remain a later design task with explicit reconfiguration semantics.
+
+## 2026-10-27 — Bounded failure diagnostics in runner status
+
+**Choice:** Retain a short, sanitized cause for failed readiness checks and
+unexpected child exits as `last_error` on runner status.
+
+**Why:** A lifecycle state such as `unhealthy` identifies the symptom but not
+the cause. Operators need enough context to investigate without reading a
+full log stream.
+
+**Consequence:** Diagnostics are stripped of control characters and capped at
+256 bytes; they intentionally never include request prompts or responses.

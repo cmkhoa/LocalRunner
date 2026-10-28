@@ -126,3 +126,14 @@ as the service gains operational features.
 
 **Consequence:** The root page stays concise while the detailed guides can grow
 independently without obscuring the normal developer workflow.
+
+## 2026-10-27 — Proxy integration tests use a controlled runner surface
+
+**Choice:** Test the API against a local mock runner through the same HTTP
+proxy path used in production, including streaming cancellation.
+
+**Why:** Unit tests cannot prove that client cancellation travels through the
+API, queue worker, HTTP client, and upstream response stream.
+
+**Consequence:** The API depends on a narrow internal runner interface, while
+the production `runner.Manager` remains its implementation.

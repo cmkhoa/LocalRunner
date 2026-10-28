@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"localrunner/internal/metrics"
@@ -70,12 +71,25 @@ func (c Config) Validate() error {
 
 // Handler owns routing for the public API.
 type Handler struct {
-	runner  *runner.Manager
+	runner  runnerService
 	logger  *slog.Logger
 	queue   *queue.Queue[chatResult]
 	client  *http.Client
 	metrics *metrics.Collector
 	config  Config
+}
+
+// runnerService is the lifecycle surface the HTTP API needs. Keeping it small
+// lets API integration tests use a controlled local upstream without changing
+// production runner behavior.
+type runnerService interface {
+	Status() runner.Status
+	Register(string) (runner.Status, error)
+	Profiles() []runner.Profile
+	ActivateProfile(string) (runner.Status, error)
+	Start(context.Context) (runner.Status, error)
+	Stop(context.Context) (runner.Status, error)
+	ChatEndpoint() (string, error)
 }
 
 type requestIDKey struct{}
@@ -89,6 +103,10 @@ func NewHandler(manager *runner.Manager, logger *slog.Logger) http.Handler {
 // limits. Callers loading configuration from the environment should validate it
 // before this point.
 func NewHandlerWithConfig(manager *runner.Manager, logger *slog.Logger, config Config) http.Handler {
+	return newHandler(manager, logger, config)
+}
+
+func newHandler(manager runnerService, logger *slog.Logger, config Config) http.Handler {
 	if err := config.Validate(); err != nil {
 		panic(fmt.Sprintf("invalid API config: %v", err))
 	}
@@ -286,13 +304,14 @@ func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, r
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.config.RequestTimeout)
 	defer cancel()
+	var streamStarted atomic.Bool
 	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
-		return h.proxyStream(ctx, request, w)
+		return h.proxyStream(ctx, request, w, &streamStarted)
 	})
 	if err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), QueueWait: queueStats.Wait, Latency: time.Since(started)})
 		var streamed *streamStartedError
-		if errors.As(err, &streamed) {
+		if streamStarted.Load() || errors.As(err, &streamed) {
 			h.logger.Warn("streamed chat completion interrupted", "request_id", requestID, "error", err)
 			return
 		}
@@ -401,7 +420,7 @@ func (h *Handler) proxyChat(ctx context.Context, chat chatRequest) (json.RawMess
 	return json.RawMessage(responseBody), nil
 }
 
-func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http.ResponseWriter) (chatResult, error) {
+func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http.ResponseWriter, streamStarted *atomic.Bool) (chatResult, error) {
 	var result chatResult
 	endpoint, err := h.runner.ChatEndpoint()
 	if err != nil {
@@ -438,6 +457,7 @@ func (h *Handler) proxyStream(ctx context.Context, chat chatRequest, writer http
 	}
 	writer.WriteHeader(http.StatusOK)
 	result.streamStarted = true
+	streamStarted.Store(true)
 	scanner := bufio.NewScanner(response.Body)
 	scanner.Buffer(make([]byte, 1024), 1<<20)
 	for scanner.Scan() {

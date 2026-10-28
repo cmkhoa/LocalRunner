@@ -181,6 +181,112 @@ localrunner/
 4. Automatic restart after an unhealthy runner process.
 5. A small CLI client.
 
+## Post-MVP expansion roadmap
+
+The product should grow into a dependable local AI runtime and control plane,
+not a replacement inference engine. `llama.cpp` remains the first inference
+backend; LocalRunner's value is a consistent developer experience around local
+models.
+
+### 1. Runtime hardening
+
+**Goal:** make the existing local service trustworthy during long-running use.
+
+- Add automated integration tests using a mock or lightweight real runner.
+- Support cancellation for queued requests and active streaming responses.
+- Make queue depth, request timeout, startup timeout, and output-token limits
+  configurable per profile.
+- Add durable structured-log output and clearer child-process crash diagnostics.
+- Record generated-token and throughput metrics for streamed responses as well
+  as regular completions.
+
+**Exit criteria:** canceled work does not linger in the queue or runner; a
+failure can be diagnosed from status, metrics, and logs without recording a
+prompt or response.
+
+### 2. OpenAI compatibility
+
+**Goal:** let existing local AI tools use LocalRunner with minimal adaptation.
+
+- Add `GET /v1/models` for the active model and configured profiles.
+- Define and test the supported OpenAI-compatible subset of chat-completion
+  request and response fields.
+- Add an optional localhost API key for tools that require one, without
+  implying public deployment or multi-user support.
+- Add a machine-readable/JSON-output mode to `localrunnerctl`.
+
+**Exit criteria:** a documented set of OpenAI-style clients can list the active
+model and make regular or streaming chat requests without custom adapters.
+
+### 3. Model management and compatibility checks
+
+**Goal:** make model selection repeatable and fail early on bad configurations.
+
+- Discover and validate configured profiles at startup.
+- Inspect GGUF metadata before launch: architecture, tokenizer/template hints,
+  model size, and quantization details where available.
+- Estimate memory/context requirements and recommend safe runtime settings for
+  the current machine.
+- Add opt-in model import/download workflows with explicit storage locations.
+- Persist per-profile benchmark history with exact machine and runtime settings.
+
+**Exit criteria:** a user can choose a named model confidently and understand
+why LocalRunner accepts, warns about, or rejects its configuration.
+
+### 4. Local AI capabilities
+
+**Goal:** support the most useful non-chat local workflows while preserving the
+same lifecycle, queueing, and observability guarantees.
+
+- Add embeddings.
+- Add structured JSON-output mode with schema validation where supported.
+- Add tool-calling request and response support.
+- Evaluate reranking and document-ingestion workflows only after embeddings are
+  stable.
+
+**Exit criteria:** each added capability has bounded request validation,
+consistent errors, metrics, tests, and a documented compatibility contract.
+
+### 5. Backend abstraction
+
+**Goal:** make LocalRunner a single local control plane rather than a hard-wired
+`llama.cpp` wrapper.
+
+- Define a runner-backend interface for lifecycle, health, chat, streaming, and
+  metrics capabilities.
+- Keep `llama.cpp` as the reference backend.
+- Evaluate additional local backends such as MLX or other server runtimes only
+  when they can meet the same localhost and observability contract.
+
+**Exit criteria:** a second backend can be added without changing the public API
+or weakening lifecycle safety.
+
+### 6. Developer experience
+
+**Goal:** make normal local operations visible without requiring raw HTTP calls.
+
+- Expand `localrunnerctl` with profile management, readable streaming output,
+  JSON output, and benchmark commands.
+- Consider a lightweight terminal UI before a browser dashboard.
+- If a web UI is added, limit it to local status, model/profile selection, live
+  logs, metrics, and a test-chat panel.
+
+**Exit criteria:** a developer can install, configure, run, inspect, and stop a
+model from one coherent workflow.
+
+### 7. Multi-model scheduling
+
+**Goal:** safely evolve beyond one active model without promising simultaneous
+inference before the hardware and scheduling design support it.
+
+- Maintain warm/cold profile states and explicit switching transitions.
+- Add memory-aware admission checks before loading a new model.
+- Queue model transitions separately from inference requests and expose their
+  state clearly.
+
+**Exit criteria:** model switching cannot strand requests, exceed a configured
+memory budget, or leave orphaned processes.
+
 ## Resume language after completion
 
 Use this only when the listed functionality is implemented:

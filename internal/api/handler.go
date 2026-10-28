@@ -48,6 +48,7 @@ func NewHandler(manager *runner.Manager, logger *slog.Logger) http.Handler {
 	mux.HandleFunc("GET /v1/runners/status", h.runnerStatus)
 	mux.HandleFunc("POST /v1/models/register", h.registerModel)
 	mux.HandleFunc("GET /v1/models/profiles", h.listProfiles)
+	mux.HandleFunc("GET /v1/models", h.listModels)
 	mux.HandleFunc("POST /v1/models/activate", h.activateProfile)
 	mux.HandleFunc("POST /v1/runners/start", h.startRunner)
 	mux.HandleFunc("POST /v1/runners/stop", h.stopRunner)
@@ -82,6 +83,33 @@ func (h *Handler) registerModel(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listProfiles(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]any{"profiles": h.runner.Profiles()})
+}
+
+// listModels exposes the small OpenAI-compatible model-list subset. Profile
+// names are stable client-facing IDs; absolute model paths stay private.
+func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
+	status := h.runner.Status()
+	seen := make(map[string]struct{})
+	models := make([]map[string]any, 0, len(h.runner.Profiles())+1)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, exists := seen[id]; exists {
+			return
+		}
+		seen[id] = struct{}{}
+		models = append(models, map[string]any{"id": id, "object": "model", "created": 0, "owned_by": "localrunner"})
+	}
+	if status.ActiveProfile != "" {
+		add(status.ActiveProfile)
+	} else {
+		add(status.ActiveModel)
+	}
+	for _, profile := range h.runner.Profiles() {
+		add(profile.Name)
+	}
+	h.writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": models})
 }
 
 func (h *Handler) activateProfile(w http.ResponseWriter, r *http.Request) {

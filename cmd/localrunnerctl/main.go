@@ -47,6 +47,8 @@ func run(arguments []string, stdout, stderr io.Writer) error {
 	switch command {
 	case "status":
 		return client.printJSON(context.Background(), stdout, http.MethodGet, "/v1/runners/status", nil)
+	case "models":
+		return client.printJSON(context.Background(), stdout, http.MethodGet, "/v1/models", nil)
 	case "metrics":
 		return client.printJSON(context.Background(), stdout, http.MethodGet, "/metrics", nil)
 	case "profiles":
@@ -223,6 +225,7 @@ const usage = `Usage: localrunnerctl [--address URL] <command> [arguments]
 
 Commands:
   status                         Show runner state and health.
+  models                         List OpenAI-compatible model IDs.
   profiles                       List configured model profiles.
   register <model.gguf>          Register an explicit local model path.
   activate <profile>             Select a configured profile.

@@ -46,6 +46,7 @@ installing anything else:
 
 ```sh
 go run ./cmd/localrunnerctl status
+go run ./cmd/localrunnerctl models
 go run ./cmd/localrunnerctl profiles
 go run ./cmd/localrunnerctl activate qwen3-local
 go run ./cmd/localrunnerctl start
@@ -122,6 +123,10 @@ curl -X POST http://127.0.0.1:8080/v1/runners/start
 
 Profiles may only be activated while the runner is stopped or unhealthy. Direct
 `/v1/models/register` remains available for one-off model paths.
+
+For OpenAI-style client discovery, `GET /v1/models` exposes the active model
+and configured profile names as `object: "model"` records. It deliberately does
+not expose local GGUF paths.
 
 ## Chat completion
 

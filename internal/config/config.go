@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"localrunner/internal/api"
 	"localrunner/internal/runner"
 )
 
@@ -19,6 +20,7 @@ const defaultListenAddress = "127.0.0.1:8080"
 type Config struct {
 	ListenAddress string
 	Runner        runner.Config
+	API           api.Config
 	Profiles      []runner.Profile
 }
 
@@ -38,6 +40,7 @@ func FromEnv() (Config, error) {
 	}
 
 	runnerConfig := runner.DefaultConfig()
+	apiConfig := api.DefaultConfig()
 	runnerConfig.Executable = envOrDefault("LOCALRUNNER_LLAMA_SERVER_PATH", runnerConfig.Executable)
 	runnerConfig.Address = envOrDefault("LOCALRUNNER_RUNNER_ADDRESS", runnerConfig.Address)
 	if err := validateLoopbackAddress("LOCALRUNNER_RUNNER_ADDRESS", runnerConfig.Address); err != nil {
@@ -64,12 +67,33 @@ func FromEnv() (Config, error) {
 	if runnerConfig.MaxAutoRestarts, err = nonNegativeIntEnv("LOCALRUNNER_MAX_AUTO_RESTARTS", runnerConfig.MaxAutoRestarts); err != nil {
 		return Config{}, err
 	}
+	if apiConfig.MaxRequestBytes, err = positiveInt64Env("LOCALRUNNER_MAX_REQUEST_BYTES", apiConfig.MaxRequestBytes); err != nil {
+		return Config{}, err
+	}
+	if apiConfig.MaxInputBytes, err = positiveIntEnv("LOCALRUNNER_MAX_INPUT_BYTES", apiConfig.MaxInputBytes); err != nil {
+		return Config{}, err
+	}
+	if apiConfig.MaxGeneratedTokens, err = positiveIntEnv("LOCALRUNNER_MAX_GENERATED_TOKENS", apiConfig.MaxGeneratedTokens); err != nil {
+		return Config{}, err
+	}
+	if apiConfig.DefaultMaxTokens, err = positiveIntEnv("LOCALRUNNER_DEFAULT_MAX_TOKENS", apiConfig.DefaultMaxTokens); err != nil {
+		return Config{}, err
+	}
+	if apiConfig.QueueCapacity, err = positiveIntEnv("LOCALRUNNER_QUEUE_CAPACITY", apiConfig.QueueCapacity); err != nil {
+		return Config{}, err
+	}
+	if apiConfig.RequestTimeout, err = durationEnv("LOCALRUNNER_REQUEST_TIMEOUT", apiConfig.RequestTimeout); err != nil {
+		return Config{}, err
+	}
+	if err := apiConfig.Validate(); err != nil {
+		return Config{}, fmt.Errorf("invalid API limits: %w", err)
+	}
 
 	profiles, err := profilesFromEnv()
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{ListenAddress: listenAddress, Runner: runnerConfig, Profiles: profiles}, nil
+	return Config{ListenAddress: listenAddress, Runner: runnerConfig, API: apiConfig, Profiles: profiles}, nil
 }
 
 func profilesFromEnv() ([]runner.Profile, error) {
@@ -134,6 +158,18 @@ func nonNegativeIntEnv(key string, fallback int) (int, error) {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 0 {
 		return 0, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+	return parsed, nil
+}
+
+func positiveInt64Env(key string, fallback int64) (int64, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
 	}
 	return parsed, nil
 }

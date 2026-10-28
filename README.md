@@ -97,6 +97,12 @@ Configuration is intentionally process-level, never supplied in HTTP requests:
 | `LOCALRUNNER_AUTO_RESTART` | `false` | Opt in to automatic recovery after an unexpected child exit |
 | `LOCALRUNNER_AUTO_RESTART_DELAY` | `2s` | Delay before an automatic restart attempt |
 | `LOCALRUNNER_MAX_AUTO_RESTARTS` | `3` | Maximum automatic attempts per LocalRunner process |
+| `LOCALRUNNER_MAX_REQUEST_BYTES` | `1048576` | Largest accepted JSON request body |
+| `LOCALRUNNER_MAX_INPUT_BYTES` | `32768` | Combined message-content byte limit |
+| `LOCALRUNNER_MAX_GENERATED_TOKENS` | `512` | Largest accepted `max_tokens` value |
+| `LOCALRUNNER_DEFAULT_MAX_TOKENS` | `256` | Generation limit when `max_tokens` is omitted |
+| `LOCALRUNNER_QUEUE_CAPACITY` | `16` | Maximum queued chat requests before HTTP 429 |
+| `LOCALRUNNER_REQUEST_TIMEOUT` | `2m` | End-to-end chat-completion time limit |
 
 Automatic restart is intentionally disabled by default. When enabled, an
 unexpected runner exit first becomes observable as `unhealthy`; LocalRunner then

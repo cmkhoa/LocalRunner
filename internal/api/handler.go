@@ -21,14 +21,52 @@ import (
 	"localrunner/internal/runner"
 )
 
-const (
-	maxRequestBytes    = 1 << 20
-	maxInputBytes      = 32 << 10
-	maxGeneratedTokens = 512
-	defaultMaxTokens   = 256
-	queueCapacity      = 16
-	requestTimeout     = 2 * time.Minute
-)
+// Config defines the API's startup-time resource limits. These controls are
+// process-wide because the request queue is allocated when the handler starts.
+type Config struct {
+	MaxRequestBytes    int64
+	MaxInputBytes      int
+	MaxGeneratedTokens int
+	DefaultMaxTokens   int
+	QueueCapacity      int
+	RequestTimeout     time.Duration
+}
+
+// DefaultConfig returns conservative limits for one local llama.cpp runner.
+func DefaultConfig() Config {
+	return Config{
+		MaxRequestBytes:    1 << 20,
+		MaxInputBytes:      32 << 10,
+		MaxGeneratedTokens: 512,
+		DefaultMaxTokens:   256,
+		QueueCapacity:      16,
+		RequestTimeout:     2 * time.Minute,
+	}
+}
+
+// Validate reports configuration combinations that would make request
+// handling ambiguous or unsafe.
+func (c Config) Validate() error {
+	if c.MaxRequestBytes <= 0 {
+		return errors.New("max request bytes must be greater than zero")
+	}
+	if c.MaxInputBytes <= 0 {
+		return errors.New("max input bytes must be greater than zero")
+	}
+	if c.MaxGeneratedTokens <= 0 {
+		return errors.New("max generated tokens must be greater than zero")
+	}
+	if c.DefaultMaxTokens <= 0 || c.DefaultMaxTokens > c.MaxGeneratedTokens {
+		return errors.New("default max tokens must be greater than zero and no more than max generated tokens")
+	}
+	if c.QueueCapacity <= 0 {
+		return errors.New("queue capacity must be greater than zero")
+	}
+	if c.RequestTimeout <= 0 {
+		return errors.New("request timeout must be greater than zero")
+	}
+	return nil
+}
 
 // Handler owns routing for the public API.
 type Handler struct {
@@ -37,13 +75,24 @@ type Handler struct {
 	queue   *queue.Queue[chatResult]
 	client  *http.Client
 	metrics *metrics.Collector
+	config  Config
 }
 
 type requestIDKey struct{}
 
 // NewHandler constructs the v1 API handler.
 func NewHandler(manager *runner.Manager, logger *slog.Logger) http.Handler {
-	h := &Handler{runner: manager, logger: logger, queue: queue.New[chatResult](queueCapacity), client: &http.Client{Timeout: requestTimeout}, metrics: metrics.New()}
+	return NewHandlerWithConfig(manager, logger, DefaultConfig())
+}
+
+// NewHandlerWithConfig constructs a handler with validated startup-time API
+// limits. Callers loading configuration from the environment should validate it
+// before this point.
+func NewHandlerWithConfig(manager *runner.Manager, logger *slog.Logger, config Config) http.Handler {
+	if err := config.Validate(); err != nil {
+		panic(fmt.Sprintf("invalid API config: %v", err))
+	}
+	h := &Handler{runner: manager, logger: logger, queue: queue.New[chatResult](config.QueueCapacity), client: &http.Client{Timeout: config.RequestTimeout}, metrics: metrics.New(), config: config}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/runners/status", h.runnerStatus)
 	mux.HandleFunc("POST /v1/models/register", h.registerModel)
@@ -69,7 +118,7 @@ func (h *Handler) registerModel(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Path string `json:"path"`
 	}
-	if err := decodeJSON(w, r, &request); err != nil {
+	if err := h.decodeJSON(w, r, &request); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -116,7 +165,7 @@ func (h *Handler) activateProfile(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		Name string `json:"name"`
 	}
-	if err := decodeJSON(w, r, &request); err != nil {
+	if err := h.decodeJSON(w, r, &request); err != nil {
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
@@ -185,12 +234,12 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	requestID := requestIDFromRequest(r)
 	var request chatRequest
-	if err := decodeJSON(w, r, &request); err != nil {
+	if err := h.decodeJSON(w, r, &request); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: "invalid_request", Latency: time.Since(started)})
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if err := request.validate(); err != nil {
+	if err := request.validate(h.config.MaxInputBytes, h.config.MaxGeneratedTokens); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: "invalid_request", Latency: time.Since(started)})
 		h.writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -200,11 +249,11 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.MaxTokens == 0 {
-		request.MaxTokens = defaultMaxTokens
+		request.MaxTokens = h.config.DefaultMaxTokens
 	}
 	request.Stream = false
 
-	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.config.RequestTimeout)
 	defer cancel()
 	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
 		response, err := h.proxyChat(ctx, request)
@@ -227,7 +276,7 @@ func (h *Handler) chatCompletion(w http.ResponseWriter, r *http.Request) {
 // active runner remains protected for the entire stream duration.
 func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, request chatRequest, started time.Time, requestID string) {
 	if request.MaxTokens == 0 {
-		request.MaxTokens = defaultMaxTokens
+		request.MaxTokens = h.config.DefaultMaxTokens
 	}
 	if _, err := h.runner.ChatEndpoint(); err != nil {
 		h.metrics.Record(metrics.Request{ErrorCategory: chatErrorCategory(err), Latency: time.Since(started)})
@@ -235,7 +284,7 @@ func (h *Handler) streamChatCompletion(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.config.RequestTimeout)
 	defer cancel()
 	result, queueStats, err := h.queue.Submit(ctx, func(ctx context.Context) (chatResult, error) {
 		return h.proxyStream(ctx, request, w)
@@ -288,7 +337,7 @@ func responseMetrics(response json.RawMessage) (int, time.Duration, float64) {
 	return tokens, time.Duration(payload.Timings.PredictedMS * float64(time.Millisecond)), payload.Timings.PredictedPerSecond
 }
 
-func (request chatRequest) validate() error {
+func (request chatRequest) validate(maxInputBytes, maxGeneratedTokens int) error {
 	if len(request.Messages) == 0 {
 		return errors.New("messages is required")
 	}
@@ -309,7 +358,7 @@ func (request chatRequest) validate() error {
 		return fmt.Errorf("message content exceeds %d bytes", maxInputBytes)
 	}
 	if request.MaxTokens < 0 || request.MaxTokens > maxGeneratedTokens {
-		return fmt.Errorf("max_tokens must be between 1 and %d", maxGeneratedTokens)
+		return fmt.Errorf("max_tokens must be between 0 and %d", maxGeneratedTokens)
 	}
 	if request.Temperature != nil && (*request.Temperature < 0 || *request.Temperature > 2) {
 		return errors.New("temperature must be between 0 and 2")
@@ -486,8 +535,8 @@ func requestIDFromRequest(request *http.Request) string {
 	return ""
 }
 
-func decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
+func (h *Handler) decodeJSON(w http.ResponseWriter, r *http.Request, destination any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, h.config.MaxRequestBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {

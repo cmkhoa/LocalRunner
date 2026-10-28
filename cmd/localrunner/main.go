@@ -32,7 +32,7 @@ func main() {
 	}
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
-		Handler:           api.NewHandler(manager, logger),
+		Handler:           api.NewHandlerWithConfig(manager, logger, cfg.API),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

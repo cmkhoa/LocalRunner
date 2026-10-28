@@ -65,3 +65,41 @@ func TestFromEnvLoadsAutoRestartSettings(t *testing.T) {
 		t.Errorf("MaxAutoRestarts = %d, want %d", got, want)
 	}
 }
+
+func TestFromEnvLoadsAPILimits(t *testing.T) {
+	t.Setenv("LOCALRUNNER_MAX_REQUEST_BYTES", "2048")
+	t.Setenv("LOCALRUNNER_MAX_INPUT_BYTES", "1024")
+	t.Setenv("LOCALRUNNER_MAX_GENERATED_TOKENS", "32")
+	t.Setenv("LOCALRUNNER_DEFAULT_MAX_TOKENS", "16")
+	t.Setenv("LOCALRUNNER_QUEUE_CAPACITY", "3")
+	t.Setenv("LOCALRUNNER_REQUEST_TIMEOUT", "5s")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv() error = %v", err)
+	}
+	if got, want := cfg.API.MaxRequestBytes, int64(2048); got != want {
+		t.Errorf("MaxRequestBytes = %d, want %d", got, want)
+	}
+	if got, want := cfg.API.MaxGeneratedTokens, 32; got != want {
+		t.Errorf("MaxGeneratedTokens = %d, want %d", got, want)
+	}
+	if got, want := cfg.API.DefaultMaxTokens, 16; got != want {
+		t.Errorf("DefaultMaxTokens = %d, want %d", got, want)
+	}
+	if got, want := cfg.API.QueueCapacity, 3; got != want {
+		t.Errorf("QueueCapacity = %d, want %d", got, want)
+	}
+	if got, want := cfg.API.RequestTimeout.String(), "5s"; got != want {
+		t.Errorf("RequestTimeout = %q, want %q", got, want)
+	}
+}
+
+func TestFromEnvRejectsDefaultMaxTokensAboveMaximum(t *testing.T) {
+	t.Setenv("LOCALRUNNER_MAX_GENERATED_TOKENS", "16")
+	t.Setenv("LOCALRUNNER_DEFAULT_MAX_TOKENS", "17")
+
+	if _, err := FromEnv(); err == nil {
+		t.Fatal("FromEnv() error = nil, want error")
+	}
+}

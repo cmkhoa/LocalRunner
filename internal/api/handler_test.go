@@ -66,6 +66,26 @@ func TestStreamingChatRequiresReadyRunner(t *testing.T) {
 	}
 }
 
+func TestChatRejectsConfiguredMaxTokens(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(testWriter{t}, nil))
+	limits := api.DefaultConfig()
+	limits.MaxGeneratedTokens = 8
+	limits.DefaultMaxTokens = 8
+	handler := api.NewHandlerWithConfig(runner.NewManager(runner.DefaultConfig(), logger), logger, limits)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{"messages":[{"role":"user","content":"hello"}],"max_tokens":9}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if want := "{\"error\":{\"code\":\"invalid_request\",\"message\":\"max_tokens must be between 0 and 8\",\"request_id\":\""; !bytes.HasPrefix(response.Body.Bytes(), []byte(want)) {
+		t.Errorf("response body = %q, want invalid max_tokens error", response.Body.String())
+	}
+}
+
 func TestListModelsUsesProfileNamesInsteadOfPaths(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "private-model.gguf")
 	if err := os.WriteFile(path, []byte("GGUF"), 0o600); err != nil {
